@@ -1,0 +1,129 @@
+[workspace]
+members = [
+    # "app",
+    "tests/regression/rust",
+    "probing/cli",
+    "probing/proto",
+    "probing/memtable",
+    "probing/core",
+    "probing/extensions/cc",
+    "probing/extensions/python",
+    "probing/extensions/gpu",
+    "probing/extensions/nccl-profiler",
+    "probing/extensions/nccl-profiler-cdylib",
+    "probing/extensions/hccl-shim",
+    "probing/extensions/hccl-profapi",
+    "probing/server",
+    "probing/crates/store",
+    "probing/crates/skills",
+]
+
+[workspace.package]
+version = "0.2.5"
+authors = ["reiase <reiase@gmail.com>"]
+edition = "2021"
+license = "Apache-2.0"
+description = "Performance and Stability Diagnostic Tool for AI Applications"
+
+[workspace.dependencies]
+anyhow = "1.0"
+arrow = { version = "58.3.0", default-features = false, features = ["csv"] }
+datafusion = { version = "54.0.0", default-features = false, features = [
+    "datetime_expressions",
+    "sql",
+    "regex_expressions",
+    "string_expressions",
+] }
+chrono = { version = "0.4", features = ["serde"] }
+ctor = { version = "0.4.1", features = [] }
+env_logger = { version = "0.11.6", default-features = false, features = [
+    "humantime",
+] }
+log = "0.4"
+nix = { version = "0.31.3", default-features = false, features = [
+    "ptrace",
+    "signal",
+    "fs",
+    "net",
+    "feature",
+    # "socket",
+    "pthread",
+    "term",
+    "ioctl",
+] }
+once_cell = "1.21.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.52.3", default-features = false, features = [
+    "net",
+    "io-util",
+    "rt-multi-thread",
+] }
+criterion = { version = "0.6.0", features = ["html_reports"] }
+
+[package]
+name = "probing"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+readme = "README.md"
+repository = "https://github.com/reiase/probing"
+homepage = "https://github.com/reiase/probing"
+keywords = ["debug", "performance", "python"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+use-mimalloc = ["dep:mimalloc"]
+extension-module = [
+    "probing-python/extension-module",
+    "probing-server/extension-module",
+]
+gpu = ["probing-server/gpu"]
+gpu-cuda = ["probing-server/gpu-cuda"]
+kmsg = ["probing-server/kmsg"]
+default = ["extension-module", "gpu", "kmsg"] # "use-mimalloc",
+
+[dependencies]
+probing-core = { path = "probing/core" }
+probing-server = { path = "probing/server", default-features = false, features = [
+    "rmcp",
+] }
+probing-python = { path = "probing/extensions/python", default-features = false, features = [
+    "tracing",
+] }
+probing-cli = { path = "probing/cli" }
+
+anyhow = { workspace = true }
+ctor = { workspace = true }
+env_logger = { workspace = true }
+log = { workspace = true }
+nix = { workspace = true }
+mimalloc = { version = "0.1.52", optional = true }
+pyo3 = { version = "0.29.0", default-features = false, features = [
+    "abi3",
+    "abi3-py38",
+    "auto-initialize",
+    "macros",
+] }
+
+[build-dependencies]
+pyo3-build-config = "0.29.0"
+
+# Faster compile + smaller artifacts than default dev (full DWARF).
+# Line tables still support breakpoints / backtraces; use `DEBUG=1 make develop` for this profile.
+[profile.dev]
+debug = 1
+split-debuginfo = "unpacked"
+codegen-units = 16
+
+[profile.release]
+opt-level = "z"  # Optimize for size.
+panic = "unwind"
+strip = false    # Automatically strip symbols from the binary.
+# lto = "thin"
+codegen-units = 16

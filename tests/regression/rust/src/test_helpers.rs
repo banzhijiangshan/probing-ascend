@@ -1,0 +1,143 @@
+// Test helper utilities module
+// Provides common functionality for creating test plugins, reducing code duplication
+
+use arrow::array::{Int32Array, StringArray};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::record_batch::RecordBatch;
+use datafusion::catalog::memory::{DataSourceExec, MemorySourceConfig};
+use datafusion::catalog::{SchemaProvider, TableProvider};
+use datafusion::execution::context::SessionState;
+use datafusion::logical_expr::Expr;
+use datafusion::physical_plan::ExecutionPlan;
+use probing_core::core::{ProbeDataSource, ProbeDataSourceKind};
+use std::sync::Arc;
+use std::sync::LazyLock;
+
+use tokio::sync::Mutex;
+
+static FEDERATION_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+/// Serialize federation integration tests that mutate global cluster state.
+pub async fn federation_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    FEDERATION_TEST_LOCK.lock().await
+}
+
+/// Generic test table plugin implementation
+#[derive(Debug, Clone)]
+pub struct GenericTableProbeDataSource {
+    pub name: String,
+    pub namespace: String,
+    pub schema: SchemaRef,
+    pub batches: Vec<RecordBatch>,
+}
+
+impl GenericTableProbeDataSource {
+    /// Create a simple test table plugin
+    pub fn new(name: &str, namespace: &str, schema: SchemaRef, batches: Vec<RecordBatch>) -> Self {
+        Self {
+            name: name.to_string(),
+            namespace: namespace.to_string(),
+            schema,
+            batches,
+        }
+    }
+
+    /// Create a simple test table with id and name columns
+    #[allow(dead_code)]
+    pub fn simple_table(name: &str, namespace: &str) -> Self {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        let id_array = Int32Array::from(vec![1, 2, 3]);
+        let name_array = StringArray::from(vec!["a", "b", "c"]);
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(id_array), Arc::new(name_array)],
+        )
+        .unwrap();
+
+        Self::new(name, namespace, schema, vec![batch])
+    }
+
+    /// Create a single-column test table
+    pub fn single_column_table(
+        name: &str,
+        namespace: &str,
+        column_name: &str,
+        values: Vec<i32>,
+    ) -> Self {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            column_name,
+            DataType::Int32,
+            false,
+        )]));
+
+        let batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(values))]).unwrap();
+
+        Self::new(name, namespace, schema, vec![batch])
+    }
+
+    /// Create an empty table
+    #[allow(dead_code)]
+    pub fn empty_table(name: &str, namespace: &str) -> Self {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let empty_array: Int32Array = Int32Array::from(vec![] as Vec<i32>);
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(empty_array)]).unwrap();
+
+        Self::new(name, namespace, schema, vec![batch])
+    }
+}
+
+impl ProbeDataSource for GenericTableProbeDataSource {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn kind(&self) -> ProbeDataSourceKind {
+        ProbeDataSourceKind::Table
+    }
+
+    fn namespace(&self) -> String {
+        self.namespace.clone()
+    }
+
+    fn register_table(
+        &self,
+        schema_provider: Arc<dyn SchemaProvider>,
+        _state: &SessionState,
+    ) -> datafusion::error::Result<()> {
+        schema_provider.register_table(self.name(), Arc::new(self.clone()))?;
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl TableProvider for GenericTableProbeDataSource {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    fn table_type(&self) -> datafusion::logical_expr::TableType {
+        datafusion::logical_expr::TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        _ctx: &dyn datafusion::catalog::Session,
+        projection: Option<&Vec<usize>>,
+        _filters: &[Expr],
+        _limit: Option<usize>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        let srccfg = MemorySourceConfig::try_new(
+            std::slice::from_ref(&self.batches),
+            self.schema.clone(),
+            projection.cloned(),
+        )?;
+        Ok(Arc::new(DataSourceExec::new(Arc::new(srccfg))))
+    }
+}

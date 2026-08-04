@@ -1,0 +1,54 @@
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use datafusion::catalog::TableProvider;
+use datafusion::datasource::{
+    file_format::csv::CsvFormat,
+    listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
+};
+use datafusion::error::Result;
+use datafusion::prelude::SessionContext;
+
+use probing_core::core::{CustomNamespace, NamespaceProbeDataSource};
+
+#[derive(Default, Debug)]
+pub struct FileList {}
+
+#[async_trait]
+impl CustomNamespace for FileList {
+    fn name() -> &'static str {
+        "file"
+    }
+
+    fn list() -> Vec<String> {
+        let direntries = match std::fs::read_dir(".") {
+            Ok(entries) => entries,
+            Err(e) => {
+                log::error!("file namespace: read_dir failed: {e}");
+                return Vec::new();
+            }
+        };
+        direntries
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let filename = entry.file_name().into_string().ok()?;
+                filename.ends_with(".csv").then_some(filename)
+            })
+            .collect()
+    }
+
+    async fn table(expr: String) -> Result<Option<Arc<dyn TableProvider>>> {
+        let ctx = SessionContext::new();
+        let state = ctx.state();
+        let table_path = ListingTableUrl::parse(expr)?;
+        let opts = ListingOptions::new(Arc::new(CsvFormat::default()));
+        let conf = ListingTableConfig::new(table_path)
+            .with_listing_options(opts)
+            .infer_schema(&state)
+            .await;
+        let table = ListingTable::try_new(conf?)?;
+        Ok(Some(Arc::new(table)))
+    }
+}
+
+pub type FilesProbeDataSource = NamespaceProbeDataSource<FileList>;

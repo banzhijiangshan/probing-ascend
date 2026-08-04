@@ -1,0 +1,57 @@
+[package]
+name = "probing-cli"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+
+[lib]
+name = "probing_cli"
+path = "src/lib.rs"
+
+# Binary entry point is now available through Python module
+# To build a standalone binary, uncomment the following:
+# [[bin]]
+# name = "probing"
+# path = "src/main.rs"
+
+[dependencies]
+probing-proto = { path = "../proto", default-features = false, features = [] }
+probing-skills = { path = "../crates/skills" }
+probing-store = { path = "../crates/store", default-features = false, features = [
+] }
+probing-memtable = { path = "../memtable" }
+
+anyhow = { workspace = true }
+log = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+nix = { workspace = true }
+
+env_logger = { workspace = true }
+once_cell = { version = "1.21.3" }
+http-body-util = { version = "0.1" }
+hyper = { version = "1.3.1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client", "http1", "tokio"] }
+libloading = "0.8.3"
+tabled = { version = "0.20.0", default-features = false, features = ["macros"] }
+libc = "0.2.176"
+tokio-tungstenite = { version = "0.28.0", features = ["rustls"] }
+reedline = "0.43.0"
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+async-trait = "0.1"
+
+[dependencies.clap]
+version = "4.5.38"
+features = ["derive", "env", "unicode", "unstable-markdown"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+pete = "0.12.0"
+procfs = { version = "0.17.0", default-features = false, features = ["chrono"] }
+
+[build-dependencies]
+vergen = { version = "9.0.0", features = ["build", "cargo", "rustc"] }

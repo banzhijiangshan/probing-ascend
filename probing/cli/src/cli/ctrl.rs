@@ -1,0 +1,263 @@
+use anyhow::{Context, Result};
+use std::io::Write;
+
+use http_body_util::{BodyExt, Full};
+use hyper_util::rt::TokioIo;
+
+use probing_proto::{prelude::*, protocol::process::CallFrame};
+
+use crate::table::{render, OutputFormat};
+
+pub async fn query(ctrl: ProbeEndpoint, query: Query) -> Result<()> {
+    query_with_format(ctrl, query, OutputFormat::Table).await
+}
+
+pub async fn query_with_format(
+    ctrl: ProbeEndpoint,
+    query: Query,
+    format: OutputFormat,
+) -> Result<()> {
+    let reply = ctrl.query(query).await?;
+    render(&reply, format);
+    Ok(())
+}
+
+#[derive(Clone)]
+pub enum ProbeEndpoint {
+    Ptrace { pid: i32 },
+    Local { pid: i32 },
+    Remote { addr: String },
+    Launch { cmd: String },
+}
+
+impl TryFrom<&str> for ProbeEndpoint {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> Result<Self> {
+        if let [_, _] = value.split(':').collect::<Vec<_>>()[..] {
+            return Ok(Self::Remote { addr: value.into() });
+        }
+
+        Ok(Self::Local {
+            pid: value.parse::<i32>()?,
+        })
+    }
+}
+
+impl TryFrom<String> for ProbeEndpoint {
+    type Error = anyhow::Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.as_str().try_into()
+    }
+}
+
+impl From<ProbeEndpoint> for String {
+    fn from(val: ProbeEndpoint) -> Self {
+        match val {
+            ProbeEndpoint::Ptrace { pid } | ProbeEndpoint::Local { pid } => format! {"{pid}"},
+            ProbeEndpoint::Remote { addr } => addr,
+            ProbeEndpoint::Launch { cmd } => cmd,
+        }
+    }
+}
+
+impl ProbeEndpoint {
+    async fn send_request(&self, url: &str, body: &str) -> Result<String> {
+        // Await request directly
+        let bytes = request(self.clone(), url, Some(body.to_string())).await?;
+        Ok(String::from_utf8(bytes)?)
+    }
+
+    pub async fn backtrace(&self, tid: Option<i32>) -> Result<()> {
+        let mut url = "/apis/pythonext/callstack".to_string();
+        if let Some(tid) = tid {
+            url = format!("/apis/pythonext/callstack?tid={tid}");
+        }
+        let reply = request(self.clone(), &url, None).await?;
+        match serde_json::from_slice::<Vec<CallFrame>>(&reply) {
+            Ok(msg) => {
+                for f in msg {
+                    println!("{f}")
+                }
+                Ok(())
+            }
+            Err(err) => Err(anyhow::anyhow!("error: {}", err)),
+        }
+    }
+
+    pub async fn rdma(&self, hca_name: String) -> Result<()> {
+        let reply = request(self.clone(), "/apis/rdmaextension/", Some(hca_name)).await?;
+
+        println!("{}", String::from_utf8(reply)?);
+
+        Ok(())
+    }
+
+    /// Run Python in the target process and return the raw JSON response body.
+    pub async fn eval_json(&self, code: String) -> Result<String> {
+        let reply = request(self.clone(), "/apis/pythonext/eval", Some(code)).await?;
+        Ok(String::from_utf8(reply)?)
+    }
+
+    pub async fn eval(&self, code: String) -> Result<()> {
+        let reply_str = self.eval_json(code).await?;
+
+        // Parse JSON response and handle output similar to repl
+        match serde_json::from_str::<serde_json::Value>(&reply_str) {
+            Ok(json) => {
+                // Display output
+                if let Some(output) = json.get("output").and_then(|v| v.as_str()) {
+                    if !output.is_empty() {
+                        print!("{}", output);
+                        // If output doesn't end with newline, add one
+                        if !output.ends_with('\n') {
+                            println!();
+                        }
+                    }
+                }
+
+                // Display error traceback
+                if let Some(traceback) = json.get("traceback").and_then(|v| v.as_array()) {
+                    if !traceback.is_empty() {
+                        for line in traceback {
+                            if let Some(line_str) = line.as_str() {
+                                eprintln!("{}", line_str);
+                            }
+                        }
+                    }
+                }
+
+                // Flush output
+                std::io::stdout().flush().unwrap();
+                std::io::stderr().flush().unwrap();
+            }
+            Err(_) => {
+                // If not JSON, display raw response
+                print!("{}", reply_str);
+                if !reply_str.ends_with('\n') {
+                    println!();
+                }
+                std::io::stdout().flush().unwrap();
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn query(&self, q: Query) -> Result<DataFrame> {
+        let request = Message::new(q);
+        let q_str = serde_json::to_string(&request)?;
+        let reply_str = self.send_request("/query", &q_str).await?; // Renamed reply variable
+        let msg = serde_json::from_str::<Message<QueryDataFormat>>(&reply_str)?;
+        if let Some(meta) = &msg.meta {
+            if meta
+                .get("fanout")
+                .and_then(|f| f.get("partial"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                eprintln!("warning: federated query returned partial data: {meta}");
+            }
+        }
+        let reply = msg.payload;
+
+        match reply {
+            QueryDataFormat::Error(err) => Err(anyhow::anyhow!("error: {}", err)),
+            QueryDataFormat::Nil => Ok(Default::default()),
+            QueryDataFormat::DataFrame(df) => Ok(df),
+            QueryDataFormat::TimeSeries(_) => {
+                anyhow::bail!("TimeSeries query responses are not supported by the CLI")
+            }
+        }
+    }
+
+    /// Fetch a flamegraph (`torch` or `pprof`) and return its raw bytes (HTML or JSON).
+    pub async fn flamegraph(&self, kind: &str, json: bool) -> Result<Vec<u8>> {
+        let url = match (kind, json) {
+            ("torch", true) => "/apis/torchextension/flamegraph/json",
+            ("torch", false) => "/apis/torchextension/flamegraph",
+            ("pprof", true) => "/apis/pprofextension/flamegraph/json",
+            ("pprof", false) => "/apis/pprofextension/flamegraph",
+            (other, _) => {
+                anyhow::bail!("unknown flamegraph kind: {other} (expected torch or pprof)")
+            }
+        };
+        request(self.clone(), url, None).await
+    }
+
+    pub async fn get(&self, url: &str) -> Result<String> {
+        let bytes = request(self.clone(), url, None).await?;
+        Ok(String::from_utf8(bytes)?)
+    }
+
+    pub async fn post_json(&self, url: &str, body: &str) -> Result<String> {
+        let bytes = request(self.clone(), url, Some(body.to_string())).await?;
+        Ok(String::from_utf8(bytes)?)
+    }
+}
+
+pub async fn request(ctrl: ProbeEndpoint, url: &str, body: Option<String>) -> Result<Vec<u8>> {
+    use hyper::body::Bytes;
+    use hyper::client::conn;
+    use hyper::Request;
+
+    let mut sender = match ctrl {
+        ProbeEndpoint::Ptrace { pid } | ProbeEndpoint::Local { pid } => {
+            eprintln!("sending ctrl commands via unix socket...");
+            #[cfg(target_os = "linux")]
+            let path = format!("\0probing-{}", pid);
+            #[cfg(not(target_os = "linux"))]
+            let path = {
+                let temp_dir = std::env::temp_dir();
+                let file_path = temp_dir.join(format!("probing-{}.sock", pid));
+                file_path.to_string_lossy().to_string()
+            };
+            let stream = tokio::net::UnixStream::connect(path).await?;
+            let io = TokioIo::new(stream);
+
+            let (sender, connection) = conn::http1::handshake(io).await?;
+            tokio::spawn(async move {
+                if let Err(e) = connection.await {
+                    eprintln!("Connection error: {e}");
+                }
+            });
+            sender
+        }
+        ProbeEndpoint::Remote { addr } => {
+            eprintln!("sending ctrl commands via tcp socket...");
+            let stream = tokio::net::TcpStream::connect(addr).await?;
+            let io = TokioIo::new(stream);
+
+            let (sender, connection) = conn::http1::handshake(io).await?;
+            tokio::spawn(async move {
+                if let Err(err) = connection.await {
+                    eprintln!("Connection error: {err}");
+                }
+            });
+            sender
+        }
+        ProbeEndpoint::Launch { .. } => {
+            anyhow::bail!(
+                "launch endpoint does not support HTTP requests; use `probing launch` instead"
+            )
+        }
+    };
+    let request = if let Some(body) = body {
+        Request::builder()
+            .method("POST")
+            .uri(url)
+            .body(Full::<Bytes>::from(body))
+            .context("Failed to build POST request")?
+    } else {
+        Request::builder()
+            .method("GET")
+            .uri(url)
+            .body(Full::<Bytes>::default())
+            .context("Failed to build GET request")?
+    };
+
+    let res = sender.send_request(request).await?;
+
+    Ok(res.collect().await.map(|x| x.to_bytes().to_vec())?)
+}

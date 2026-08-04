@@ -1,0 +1,308 @@
+# Contributing Guide
+
+Thank you for contributing to Probing. This document is the **canonical development guide** for working from a git checkout.
+
+| Topic | Where |
+|-------|--------|
+| **New here? Start here** | [Welcome — get started](#getting-started) below |
+| End-user install (PyPI / wheel) | [Installation](installation.md) |
+| Daily dev bootstrap | [Development setup](#development-setup) |
+| Agent diagnostic skills | [Skills & agents](#skills-agents) + [AGENTS.md](https://github.com/DeepLink-org/probing/blob/main/AGENTS.md) |
+| PR / style / conduct | [Submitting changes](#submitting-changes) |
+| Documentation tone | [writing.md](writing.md) |
+
+## Welcome — get started {#getting-started}
+
+Probing is a **layered** project: SQL engine and collectors in Rust, Python SDK and hooks, diagnostic skills, and a Web UI. **You do not need to learn every layer** to contribute — pick a track that matches your background.
+
+### Your first 30 minutes
+
+```bash
+git clone https://github.com/DeepLink-org/probing.git
+cd probing
+python3 -m venv .venv && source .venv/bin/activate   # or: uv venv && source .venv/bin/activate
+pip install maturin
+make develop
+make check-dev
+make test-python-regression    # fast Python smoke; or: make test for full suite
+```
+
+If all of the above succeed, your environment is ready. Requires Rust **stable** ([Prerequisites](#prerequisites) if `make develop` fails on the toolchain). Optional: `./skills/install.sh` so Cursor / Claude / Codex can use repo skills.
+
+Preview docs while editing: `make docs-install && make docs-serve` → http://127.0.0.1:8000
+
+### Pick a contribution track
+
+| Track | You might… | Main directories | Read first | Good first tasks |
+|-------|------------|------------------|------------|------------------|
+| **Skills** | Add or improve training diagnostics | [`skills/`](https://github.com/DeepLink-org/probing/blob/main/skills/README.md) | [AGENTS.md](https://github.com/DeepLink-org/probing/blob/main/AGENTS.md), [Extensibility — skill](design/extensibility.md#path-2-diagnostic-skill) | New skill folder, fix SQL in `steps.yaml`, improve `SKILL.md` |
+| **Vendor extensions** | Standalone `probing-<vendor>` pip packages | Template `examples/probing-acme/` | [Extensibility — vendor package](design/extensibility.md#path-4-vendor-extension-package-probing-vendor) | Publish `probing-nvidia`, `probing-huawei`, etc. |
+| **Python** | Table plugins, hooks, skill tooling | `python/probing/`, [`python/probing/skills/`](https://github.com/DeepLink-org/probing/blob/main/python/probing/skills/README.md) | [Extensibility — table plugin](design/extensibility.md#path-1-table-plugin-dataclass--table) | `@table` example, loader/install tests in `tests/regression/skills/` |
+| **Docs & examples** | Clarify concepts or add recipes | `docs/src/`, `examples/` | [Core concepts](guide/concepts.md) | Fix typos, add troubleshooting, extend `examples/README.md` |
+| **Rust** | SQL engine, server, collectors, CLI | `probing/` (Rust workspace) | [Modularity](design/modularity.md) | Issues in `probing/core`, `probing/server`, extensions |
+| **Web UI** | Investigate agent, dashboards | `web/` | [web/DESIGN.md](https://github.com/DeepLink-org/probing/blob/main/web/DESIGN.md) | Agent UX, page polish (needs `dx` for full wheel build) |
+
+**Skills vs Python package:** edit skill **data** in repo-root `skills/` (symlink to `python/probing/bundled_skills/`); edit skill **loader / install code** in `python/probing/skills/`.
+
+**Two folders named `probing/`:** `probing/` at the repo root is **Rust**; `python/probing/` is the **Python package**. `src/lib.rs` at the root is the PyO3 entry for `probing._core`.
+
+### Your first pull request
+
+1. Fork, branch: `git checkout -b docs/my-improvement` (or `feat/…`, `fix/…`)
+2. Make a **focused** change in one track above
+3. Run tests for what you touched:
+   - Skills: `python -m probing.skills validate` and `pytest tests/regression/skills/ -q`
+   - Python: `pytest tests/unit/probing/…` or `tests/regression/…`
+   - Rust: `make test-rust-unit` or `make test-rust-regression`
+   - Docs only: `make docs`
+4. `make lint` when you changed code
+5. Open a PR — say **what** and **why**; link an issue if there is one
+
+Not sure where your change belongs? Open a [Discussion](https://github.com/DeepLink-org/probing/discussions) or issue first — we are happy to point you to the right layer.
+
+## Prerequisites {#prerequisites}
+
+- **Python** 3.9+
+- **Rust (stable channel)** + **Cargo** — the repo and CI build on stable only; nightly is not required
+- **maturin** — builds `probing._core` (`pip install maturin` or `uv pip install maturin`)
+- **uv** (optional but recommended) — many devs use `uv venv`; the Makefile falls back to `uv pip` when the venv has no `pip`
+
+Install Rust stable (if you do not have it yet):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup default stable
+rustup component add rustfmt clippy
+rustc --version   # should show a stable release, e.g. rustc 1.xx.x (…)
+```
+
+Optional (release / web UI only):
+
+- **dioxus-cli** (`dx`) — `make frontend` builds the web UI; `make wheel` embeds it
+- **cargo-zigbuild** + **ziglang** — Linux manylinux wheels (`make wheel-ci`)
+
+## Development setup {#development-setup}
+
+One-time per clone:
+
+```bash
+git clone https://github.com/DeepLink-org/probing.git
+cd probing
+
+# Virtual environment (pick one)
+python3 -m venv .venv && source .venv/bin/activate
+# or: uv venv && source .venv/bin/activate
+
+pip install maturin   # or: uv pip install maturin
+make develop
+./skills/install.sh   # optional: Cursor / Claude / Codex skill dirs
+```
+
+`make develop` does:
+
+1. **`make core`** — `maturin develop` → `probing._core` + editable `probing.pth` (repo `python/` on `sys.path`) + `probing` CLI on `PATH`
+2. **`install-dev-python-deps`** — `pytest`, `pyyaml`, etc. (via `pip`, `uv pip`, or `ensurepip`)
+3. **`python/probing/dev_pth.py install`** — writes `probing_hook.pth` so develop matches wheel auto-hook behavior
+4. **`check-dev`** — smoke import `_core`, skills catalog, CLI
+
+Verify anytime:
+
+```bash
+make check-dev
+python python/probing/dev_pth.py status
+```
+
+### Site hook (`.pth`) in develop vs wheel
+
+| File | Written by | Purpose |
+|------|------------|---------|
+| `probing.pth` | maturin (develop / wheel) | Wheel: `import probing_hook`. Develop: **path line** to repo `python/` |
+| `probing_hook.pth` | `make develop` (`dev_pth.py`) | Develop only: `import probing_hook` (pairs with path `.pth`) |
+
+Implementation: `python/probing_hook.py` → `python/probing/site_hook.py`.
+Training / tests: set `PROBING=1` (or `2`, filters — see `site_hook.py`). Tests default to `PROBING=1` in `tests/conftest.py`.
+
+You do **not** need `PYTHONPATH=python/` after `make develop` inside the project venv.
+
+### Makefile targets (daily use)
+
+Run **`make help`** in the repo root for the full target list with one-line descriptions.
+
+| Target | When |
+|--------|------|
+| `make develop` / `make dev` | First setup; after pulling large Python/Rust layout changes |
+| `make core` | Rebuild `_core` only after Rust edits |
+| `make check-dev` | Quick sanity check |
+| `make test` | Rust + editable Python (daily dev) |
+| `make test-wheel` | Python tests against installed wheel (needs `dist/*.whl`) |
+| `make test-ci` | `make test` + `make test-wheel` (matches CI Python gate) |
+| `make lint` | `ruff check` + `cargo clippy` + `mkdocs build --strict` |
+| `make clippy-fix` | Apply Clippy auto-fixes (`--fix --allow-dirty`) |
+| `make test-rust` / `make test-python` | Split test runs |
+| `make docs-install` | MkDocs deps (first time editing docs) |
+| `make docs-serve` | Live docs preview at http://127.0.0.1:8000 |
+| `make docs` | Build static docs to `docs/site/` |
+| `python -m probing.skills validate` | Validate `skills/*/SKILL.md` + `steps.yaml` |
+| `make frontend` | Manual `web/dist/` build (UI changes or before wheel) |
+| `make wheel` | Release wheel (requires `web/dist/`; auto-bundles skills + UI) |
+| `make install-wheel` | Reinstall `dist/probing-*.whl` (CI / release smoke) |
+
+Day-to-day:
+
+```bash
+source .venv/bin/activate
+make test
+probing skill list
+make core              # after Rust-only changes
+```
+
+### Release / CI wheel smoke test
+
+```bash
+make frontend && make wheel && make test-ci
+# or step-by-step:
+make frontend && make wheel && make install-wheel
+make test-python-wheel   # tests against installed wheel + checkout pure Python
+```
+
+### Examples (optional ML stack)
+
+`make develop` does **not** install PyTorch. For `examples/` scripts:
+
+```bash
+uv pip install torch torchvision   # or pip install …
+PROBING=1 python examples/tracing.py
+```
+
+See [examples/README.md](https://github.com/DeepLink-org/probing/blob/main/examples/README.md).
+
+## Skills & agents {#skills-agents}
+
+- **Authoring**: repo root `skills/` (`SKILL.md`, `steps.yaml`, `catalog.yaml`)
+- **Install to IDE agents**: `./skills/install.sh` or `probing skill install`
+- **Bundled in wheel**: `make wheel` copies skills into `python/probing/bundled_skills/` and UI into `python/probing/bundled_web/`
+- **Docs**: `skills/README.md`, [Extensibility — Diagnostic skill](design/extensibility.md#path-2-diagnostic-skill)
+
+## Development workflow
+
+### Running tests
+
+Two layers — **unit** and **regression**. Layout: [`tests/README.md`](https://github.com/DeepLink-org/probing/blob/main/tests/README.md).
+
+| Layer | Rust | Python (migration in progress) |
+|-------|------|--------------------------------|
+| Unit | `#[cfg(test)]` in `probing/**/src/` | `tests/unit/probing/` mirrors `python/probing/` |
+| Regression | `tests/regression/rust/probing/**` + `probing/macros/tests/` | `tests/regression/` (incl. `spec/api_spec.json`) |
+
+```bash
+make test              # Rust + editable Python
+make test-ci           # above + wheel install tests (CI Python gate)
+make test-rust-unit
+make test-rust-regression
+make test-python-unit
+make test-python-regression
+make test-python
+make coverage          # local editable + Rust (requires cargo-llvm-cov; see CI for wheel coverage)
+```
+
+**Rust exception:** `probing/macros/tests/` must stay as an external crate (proc-macro tests).
+
+### Code style
+
+**Python:** `ruff` (lint + format), `mypy`
+
+```bash
+make fmt              # ruff format + fix (Python); rustfmt (Rust)
+make lint-python      # ruff check + ruff format --check
+mypy python/probing
+```
+
+**Rust:** `rustfmt`, `clippy` (shared rules in `clippy.toml`; strict lints are **enabled per crate** — see each crate’s `Cargo.toml` `[lints]`)
+
+```bash
+cargo fmt --all
+make lint-core          # probing-core (clippy::all enabled)
+make lint-rust          # cargo clippy --workspace + web/, warnings denied
+make clippy-fix         # auto-fix what Clippy can (review diff before commit)
+```
+
+Clippy runs in CI. After editing `probing-core`, run `make lint-core` before pushing. Full-workspace `make lint-rust` may still fail until other crates are cleaned up — we are rolling out lints crate by crate.
+
+**Status:** `probing-core` has `clippy::all` (`pedantic`/`nursery` off; protocol-related allows in `probing/core/Cargo.toml`). Next candidates: `probing-proto`, `probing-memtable`.
+
+### Building documentation
+
+From the **repository root** (same pattern as `make test`, `make develop`):
+
+```bash
+make docs-install   # once: MkDocs + i18n + mkdocstrings
+make docs-serve     # http://127.0.0.1:8000, auto-reload on edit
+make docs           # static build → docs/site/
+```
+
+Advanced: `cd docs && make deploy` for GitHub Pages.
+
+## Project structure
+
+```
+probing/                          # repo root
+├── skills/                       # skill DATA (authoring) — see skills/README.md
+├── python/
+│   ├── probing/                  # Python PACKAGE (not Rust)
+│   │   ├── skills/               # skill loader/install CODE — see python/probing/skills/README.md
+│   │   ├── web_assets.py         # wheel _web/ + editable web/dist → PROBING_ASSETS_ROOT
+│   │   ├── bundled_skills/       # skill DATA bundled in wheel (author in repo-root skills/)
+│   │   └── bundled_web/          # UI bundled in wheel (make frontend)
+│   ├── probing_hook.py           # .pth → site hook
+│   └── probing.pth
+├── src/lib.rs                    # PyO3 entry → probing._core (maturin)
+├── probing/                      # Rust WORKSPACE (core, server, cli, extensions)
+├── web/                          # Dioxus UI (`make frontend` → web/dist/)
+├── tests/                        # see tests/README.md
+├── examples/                     # optional torch/etc.
+└── docs/src/                     # this documentation site
+```
+
+Architecture layers (what may call what): [Modularity](design/modularity.md).
+Agent workflow: [AGENTS.md](https://github.com/DeepLink-org/probing/blob/main/AGENTS.md).
+
+## Submitting changes {#submitting-changes}
+
+### Pull request process
+
+1. Fork and branch: `git checkout -b feature/your-feature`
+2. Change + tests + docs
+3. `make test && make lint`
+4. Open PR with a focused description
+
+### Commit messages
+
+[Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`, `test:`, `chore:`, …
+
+### Code review
+
+- Keep PRs focused; add tests for behavior changes
+- Update user-facing docs when install/dev flow changes
+
+## Areas for contribution
+
+We welcome contributions at every layer — you **do not** need Rust or frontend experience to start.
+
+| Label / area | Examples |
+|--------------|----------|
+| **Skills & docs** | New diagnostics, clearer guides, translations |
+| **`good-first-issue`** | Curated starter tasks on GitHub |
+| **Python plugins** | `@table` collectors, skill tooling |
+| **Rust / Web** | Engine, server, UI — best with matching background |
+| **Tests** | Unit/regression coverage — see [`tests/README.md`](https://github.com/DeepLink-org/probing/blob/main/tests/README.md) |
+
+Discuss large features in an issue before a big PR.
+
+## Getting help
+
+- **GitHub Issues** — bugs and features
+- **Discussions** — questions and design
+
+## Code of conduct
+
+Please be respectful and constructive. Contributions are licensed under Apache 2.0.

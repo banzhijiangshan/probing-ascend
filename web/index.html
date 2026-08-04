@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Probing Web Interface</title>
+    <link rel="icon" type="image/svg" id="favicon" href="/logo.svg">
+    <script>
+      if (window.__PROBING_BASE_PATH__) {
+        document.getElementById('favicon').href = window.__PROBING_BASE_PATH__ + '/logo.svg';
+      }
+    </script>
+    <link rel="stylesheet" href="/assets/tailwind.css">
+</head>
+<body>
+    <div id="main"></div>
+</body>
+</html>

@@ -1,0 +1,253 @@
+use clap::{Args, Subcommand, ValueEnum};
+
+use super::store::StoreCommand;
+use crate::cli::cluster;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum FlamegraphKind {
+    /// CPU sampling profile (pprof)
+    Pprof,
+    /// PyTorch module-level profile
+    Torch,
+}
+
+impl FlamegraphKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FlamegraphKind::Pprof => "pprof",
+            FlamegraphKind::Torch => "torch",
+        }
+    }
+}
+
+#[derive(Args, Default, Debug)]
+pub struct Settings {
+    /// Probing mode - controls how the probe system is enabled
+    ///
+    /// Supported values:
+    ///   - **0**: Disabled (default)
+    ///   - **1** or **followed**: Enable only in current process
+    ///   - **2** or **nested**: Enable in current and all child processes
+    ///   - **regex:PATTERN**: Enable if script name matches regex pattern
+    ///   - **SCRIPTNAME**: Enable if script name matches exactly
+    ///   - **script:<init script>+[0|1|2]**: Run script and enable with level
+    ///
+    /// Examples:
+    /// ```bash
+    /// $ probing <endpoint> config --probing 1
+    /// $ probing <endpoint> config --probing script:script.py+1
+    /// ```
+    #[arg(long, env = "PROBING")]
+    probing_mode: Option<String>,
+
+    /// Log level for the probing system
+    ///
+    /// Supported values:
+    ///   - **debug**: Enable debug messages (verbose)
+    ///   - **info**: Enable info messages (default)
+    ///   - **warn**: Show only warnings and errors
+    ///   - **error**: Show only errors
+    #[arg(long, env = "PROBING_LOGLEVEL")]
+    loglevel: Option<String>,
+
+    /// Root path for assets used by the probing UI dashboard
+    ///
+    /// Examples:
+    /// ```bash
+    /// probing <endpoint> config --assets-root /path/to/ui/assets
+    /// ```
+    #[arg(long, env = "PROBING_ASSETS_ROOT")]
+    assets_root: Option<String>,
+
+    /// TCP port for the probing server to listen on
+    ///
+    /// ```bash
+    /// probing <endpoint> config --server-port 8080
+    /// ```
+    #[arg(long, env = "PROBING_PORT")]
+    server_port: Option<u64>,
+
+    /// PyTorch profiling specification string passed to TorchProbeConfig.
+    ///
+    /// Examples:
+    /// ```bash
+    /// probing <endpoint> config --torch-profiling on
+    /// probing <endpoint> config --torch-profiling "random:0.1,exprs=loss@step"
+    /// ```
+    #[arg(long, env = "PROBING_TORCH_PROFILING", alias = "torch-profiling-mode")]
+    torch_profiling: Option<String>,
+
+    #[arg(long, env = "PROBING_RDMA_SAMPLE_RATE")]
+    rdma_sample_rate: Option<f64>,
+
+    #[arg(long, env = "PROBING_RDMA_HCA_NAME")]
+    rdma_hca_name: Option<String>,
+}
+
+impl Settings {
+    pub fn to_cfg(&self) -> Option<String> {
+        let mut cfg = String::new();
+        macro_rules! set_if_some {
+            ($field:expr, $key:expr) => {
+                if let Some(value) = &$field {
+                    cfg.push_str(&format!("set {}={};", $key, value));
+                }
+            };
+            ($field:expr, $key:expr, $formatter:expr) => {
+                if let Some(value) = &$field {
+                    cfg.push_str(&format!("set {}={};", $key, $formatter(value)));
+                }
+            };
+        }
+
+        set_if_some!(self.probing_mode, "probing");
+        set_if_some!(self.loglevel, "server.log_level");
+        set_if_some!(self.assets_root, "server.assets_root");
+        set_if_some!(self.server_port, "server.address", |p| format!(
+            "0.0.0.0:{p}"
+        ));
+        set_if_some!(self.torch_profiling, "torch.profiling");
+
+        set_if_some!(self.rdma_sample_rate, "rdma.sample_rate", |r| {
+            format!("{r:.2}")
+        });
+        set_if_some!(self.rdma_hca_name, "rdma.hca_name");
+
+        if cfg.is_empty() {
+            None
+        } else {
+            Some(cfg)
+        }
+    }
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Inject libprobing into a running process (Linux ptrace)
+    #[cfg(target_os = "linux")]
+    #[command(visible_aliases = ["in", "i"])]
+    Inject(super::inject::InjectCommand),
+
+    /// List processes that already have probing enabled
+    #[command(visible_aliases = ["ls", "l"])]
+    List {
+        #[arg(short, long, help = "Show detailed information")]
+        verbose: bool,
+
+        #[arg(short, long, help = "Show processes as a tree structure")]
+        tree: bool,
+    },
+
+    /// Display or modify the configuration
+    #[command(visible_aliases = ["cfg", "c"])]
+    Config {
+        #[command(flatten)]
+        options: Settings,
+
+        setting: Option<String>,
+    },
+
+    /// Show the backtrace of the target process or thread
+    #[command(visible_aliases = ["bt", "b"])]
+    Backtrace { tid: Option<i32> },
+
+    /// Get RDMA flow of the target process or thread
+    #[command(visible_aliases = ["rd"])]
+    Rdma { hca_name: Option<String> },
+
+    /// Evaluate Python code in the target process
+    #[command(visible_aliases = ["e"])]
+    Eval {
+        #[arg()]
+        code: String,
+    },
+
+    /// Query data from the target process
+    #[command(visible_aliases = ["q"])]
+    Query {
+        #[arg()]
+        query: String,
+
+        /// Output format for the query result
+        #[arg(short, long, value_enum, default_value_t = crate::table::OutputFormat::Table)]
+        format: crate::table::OutputFormat,
+    },
+
+    /// List queryable tables in the target process
+    #[command(visible_aliases = ["tbl"])]
+    Tables {
+        /// Show all tables including internal information_schema tables
+        #[arg(short, long)]
+        all: bool,
+
+        /// Output format for the table list
+        #[arg(short, long, value_enum, default_value_t = crate::table::OutputFormat::Table)]
+        format: crate::table::OutputFormat,
+    },
+
+    /// Show memory usage (host RSS and GPU memory) of the target process
+    #[command(visible_aliases = ["mem"])]
+    Memory {
+        /// Number of recent samples to display
+        #[arg(short, long, default_value_t = 10)]
+        limit: usize,
+
+        /// Output format for the memory report
+        #[arg(short, long, value_enum, default_value_t = crate::table::OutputFormat::Table)]
+        format: crate::table::OutputFormat,
+    },
+
+    /// Fetch a flamegraph (CPU/pprof or PyTorch) from the target process
+    #[command(visible_aliases = ["flame", "fg"])]
+    Flamegraph {
+        /// Flamegraph source: `pprof` (CPU sampling) or `torch` (PyTorch modules)
+        #[arg(value_enum, default_value_t = FlamegraphKind::Pprof)]
+        kind: FlamegraphKind,
+
+        /// Write output to a file instead of stdout
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// Emit raw folded-stack JSON instead of interactive HTML
+        #[arg(short, long)]
+        json: bool,
+    },
+
+    /// Interactive Python REPL session
+    #[command(visible_aliases = ["r"])]
+    Repl,
+
+    /// Launch a command with probing enabled (Linux)
+    #[cfg(target_os = "linux")]
+    #[command()]
+    Launch {
+        #[arg(short, long)]
+        recursive: bool,
+
+        #[arg()]
+        args: Vec<String>,
+    },
+
+    #[command(external_subcommand)]
+    External(Vec<String>),
+
+    /// Access various storage backends
+    #[command(subcommand = false, hide = true)]
+    Store(StoreCommand),
+
+    /// On-demand cluster SQL fan-out and node listing
+    #[command(subcommand)]
+    Cluster(cluster::ClusterCommand),
+
+    /// Stress and benchmark the in-process data layer
+    #[command(hide = true)]
+    Bench(super::bench::BenchCommand),
+
+    /// Run structured diagnostic skills (shared with Web Agent)
+    #[command(subcommand, visible_aliases = ["doc", "dr"])]
+    Skill(super::skill::SkillCommand),
+
+    /// MCP endpoint URL and agent config for the target probing server
+    #[command(subcommand, visible_aliases = ["agent-mcp"])]
+    Mcp(super::mcp::McpCommand),
+}

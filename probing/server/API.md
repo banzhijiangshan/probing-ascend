@@ -1,0 +1,231 @@
+# Probing HTTP API
+
+## Routing model
+
+| Layer | URL pattern | Registration |
+|-------|-------------|--------------|
+| **Server public** | `/apis/{resource}` | `server/api/mod.rs` (explicit Axum routes) |
+| **Extension** | `/apis/{ext.name()}/{local_path}` | `@ext_handler` (Python) or `ProbeExtensionCall` (Rust) |
+| **SQL** | `POST /query` | DataFusion engine (not REST) |
+
+Extension HTTP name comes from `ProbeExtension::name()` (derived: struct lowercased, with `probeextension` → `extension`, e.g. `RdmaProbeExtension` → `rdmaextension`, `PythonExt` → `pythonext`).
+
+SQL catalog registration uses [`EngineBuilder::with_data_source`](super::engine::EngineBuilder::with_data_source) and is separate from extension HTTP/SET wiring.
+
+## Server public API
+
+Registered in `server/api/mod.rs`:
+
+| Method | Path | Handler |
+|--------|------|---------|
+| GET | `/apis/overview` | System overview |
+| GET | `/apis/files?path=…` | Read workspace file |
+| GET/PUT | `/apis/nodes` | Cluster node list / register |
+| GET | `/apis/training/step_matrix` | Cross-rank train.step samples (`cluster=false` default; set `cluster=true` for on-demand fan-out) |
+| POST | `/apis/cluster/query` | On-demand SQL fan-out (`{"expr":"…","cluster":true}`) |
+
+Flamegraphs are served by profiler extensions (extension fallback, not public routes):
+
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/apis/torchextension/flamegraph` | PyTorch module flamegraph (interactive HTML) |
+| GET | `/apis/torchextension/flamegraph/json` | JSON for native Web UI (`?metric=` optional) |
+| GET | `/apis/pprofextension/flamegraph` | CPU sampling flamegraph (interactive HTML) |
+| GET | `/apis/pprofextension/flamegraph/json` | JSON for native Web UI |
+
+## Cluster query (on-demand fan-out)
+
+Training agents write to **local memtable only**. Cross-node aggregation is explicit:
+
+- **Local** (default): `GET /apis/training/step_matrix?cluster=false` or `POST /apis/cluster/query` with `"cluster": false`
+- **Cluster scan**: `cluster=true` fans out the same SQL to peer nodes from the in-memory cluster view (torchrun report / `PUT /apis/nodes`), merges rows, and tags `_probe_host` / `_probe_addr`
+
+CLI:
+
+```bash
+probing -t host:8080 cluster query "SELECT rank, local_step, duration_ms FROM python.comm_collective LIMIT 20"
+probing -t host:8080 cluster query --local "SELECT * FROM python.comm_collective LIMIT 5"
+probing -t host:8080 cluster nodes
+```
+
+## Extension API (`pythonext`)
+
+All handlers live in `python/probing/handlers/pythonext.py`, one canonical local path each.
+
+| Method | Path | Handler |
+|--------|------|---------|
+| GET | `/apis/pythonext/callstack?tid=&mode=` | `callstack` |
+| POST | `/apis/pythonext/eval` | `eval` (body = code) |
+| GET | `/apis/pythonext/trace/list` | `trace/list` |
+| GET | `/apis/pythonext/trace/show` | `trace/show` |
+| GET | `/apis/pythonext/trace/start` | `trace/start` |
+| GET | `/apis/pythonext/trace/stop` | `trace/stop` |
+| GET | `/apis/pythonext/trace/variables` | `trace/variables` |
+| GET | `/apis/pythonext/trace/chrome-tracing` | `trace/chrome-tracing` |
+| GET | `/apis/pythonext/pytorch/timeline` | `pytorch/timeline` |
+| GET | `/apis/pythonext/pytorch/profile` | `pytorch/profile` |
+| GET | `/apis/pythonext/ray/timeline` | `ray/timeline` |
+| GET | `/apis/pythonext/ray/timeline/chrome` | `ray/timeline/chrome` |
+| GET | `/apis/pythonext/magics` | `magics` |
+| GET | `/apis/pythonext/skills/list` | `skills/list` — merged catalog |
+| GET | `/apis/pythonext/skills/load?id=` | `skills/load` — one skill JSON |
+| GET | `/apis/pythonext/skills/catalog` | `skills/catalog` |
+| GET | `/apis/pythonext/skills/routing` | `skills/routing` — catalog + intents + pages |
+| GET | `/apis/pythonext/skills/roots` | `skills/roots` — discovered skill directories |
+| GET | `/apis/pythonext/extensions/list` | `extensions/list` — installed `probing-<vendor>` packages |
+| GET | `/apis/pythonext/flight-recorder/snapshot?include_stack_traces=&only_active=&persist=` | `flight-recorder/snapshot` |
+
+Skill HTTP endpoints above are **discovery only** (catalog, routing, load JSON). Execution
+uses the Rust `probing-skills` runner: CLI `probing skill run`, MCP `run_skill` /
+`plan_skill`, or Web Investigate Agent (WASM).
+
+Rust-backed endpoints (`callstack`, `eval`) are thin `@ext_handler` wrappers around `probing._core.api_callstack` / `api_eval`.
+
+## Other extensions
+
+| Extension | Example path | Notes |
+|-----------|--------------|-------|
+| `torchextension` | `GET /apis/torchextension/flamegraph` | Rust `ProbeExtensionCall`; torch module flamegraph |
+| `torchextension` | `GET /apis/torchextension/flamegraph/json` | Torch flamegraph JSON (`?metric=` optional) |
+| `pprofextension` | `GET /apis/pprofextension/flamegraph` | CPU SIGPROF flamegraph HTML |
+| `pprofextension` | `GET /apis/pprofextension/flamegraph/json` | pprof flamegraph JSON |
+| `rdmaextension` | `POST /apis/rdmaextension/` | Rust `ProbeExtensionCall`, CLI only |
+
+## Top-level (non `/apis`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/query` | SQL (`Message<Query>` JSON) |
+| POST | `/query/dto` | SQL (JSON DTO, external clients) |
+| GET | `/config/{config_key}` | Read config value |
+| GET | `/ws` | WebSocket REPL |
+| * | `/mcp` | MCP Streamable HTTP (agent tools + schema resources) |
+
+### MCP (Model Context Protocol)
+
+When built with the `rmcp` feature (default in the PyPI wheel), the server exposes MCP at **`/mcp`** using [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http).
+
+#### Read tools (always enabled)
+
+| Tool | Purpose |
+|------|---------|
+| `query` | Read-only SQL against the in-process engine (`limit` caps rows) |
+| `describe_tables` | Semantic docs from `probe.probing.table_docs` / `column_docs` |
+| `list_skills` | List diagnostic skills (bundled + entry-point extensions) |
+| `plan_skill` | Expand a skill into SQL/API steps (Rust in-process) |
+| `run_skill` | Execute a diagnostic skill (Rust in-process) |
+| `list_cluster_nodes` | `GET /apis/nodes` — registered cluster members |
+| `cluster_query` | Read-only SQL with optional cluster fan-out (`cluster` default `true`) |
+
+#### Write tools (disabled unless `PROBING_MCP_ALLOW_WRITE=1`)
+
+| Tool | Purpose |
+|------|---------|
+| `set_config` | `SET probing.* = …` runtime config |
+| `eval_python` | `POST /apis/pythonext/eval` — run Python in the training process |
+
+Write calls are logged at `info` as `MCP write audit: …`.
+
+#### Resources
+
+| URI | Content |
+|-----|---------|
+| `probing://schema/catalog` | All table docs (JSON) |
+| `probing://schema/{schema}/{table}` | One table doc + column docs (JSON) |
+
+Cursor / Claude Code example (remote training agent on `host:8080`):
+
+```json
+{
+  "mcpServers": {
+    "probing": {
+      "url": "http://127.0.0.1:8080/mcp"
+    }
+  }
+}
+```
+
+Enable intervention tools for an on-call agent:
+
+```bash
+export PROBING_MCP_ALLOW_WRITE=1
+```
+
+For the in-process unix-socket server (same PID as training), point MCP at the TCP address from `server.address` config after `PROBING=1` startup.
+
+## Adding endpoints
+
+```
+New HTTP endpoint?
+├─ Stable platform / special HTTP semantics → server/api/mod.rs
+└─ Extension-specific → @ext_handler("pythonext", "group/action") only
+```
+
+Do not register the same capability in both places. Do not add path aliases.
+
+## HTTP status codes
+
+| Case | Status |
+|------|--------|
+| Extension path in spec, wrong HTTP method | 405 |
+| EEM / extension not found | 404 |
+| Python handler JSON `{"error":"No handler found…"}` | 404 |
+| Other Python handler JSON `{"error":…}` | 400 |
+| Invalid query string on extension URL | 400 |
+| Missing config key | 404 |
+| Invalid `/query` JSON body | 400 |
+| SET statement failure on `/query` | 500 (payload `QueryDataFormat::Error`) |
+| Invalid file path / missing param | 400 |
+| File too large | 413 |
+
+## Extension response headers
+
+Extension fallback responses (`server/api/extension.rs`) take `Content-Type` and CORS
+from [`tests/regression/spec/api_spec.json`](../../tests/regression/spec/api_spec.json), not path substring
+heuristics. Each handler declares:
+
+```json
+"response": { "content_type": "application/json", "cors": true }
+```
+
+Defaults live in `extension_response_defaults`. Lookup is implemented in
+`server/api/response.rs` (compile-time embedded spec).
+
+| Field | Meaning |
+|-------|---------|
+| `content_type` | `application/json` or `text/plain` |
+| `cors` | When `true`, add CORS headers (timeline endpoints for Perfetto UI) |
+
+When adding a pythonext handler, update the spec `response` block alongside
+`pythonext_handlers` and `@ext_handler`.
+
+## Client contracts (Web UI + CLI)
+
+Web and CLI do **not** import Server routes. They share the same machine-readable
+contract: [`tests/regression/spec/api_spec.json`](../../tests/regression/spec/api_spec.json), section
+`client_contracts`.
+
+Each entry lists the Rust source file and the HTTP calls it makes (`method` +
+`path`). Contract tests in `tests/regression/spec/client_contract.py` verify:
+
+- declared paths exist in the canonical endpoint list (`server_public`,
+  `pythonext_handlers`, `other_extensions`, `top_level`)
+- path literals in source match the contract
+- no deprecated paths (e.g. `/apis/python/…`) appear in client code
+
+When adding or changing a Web/CLI HTTP call, update `client_contracts` in the
+spec — not Server source.
+
+```bash
+uv run pytest tests/regression/spec/test_api_spec.py -q
+```
+
+## Contract spec (machine-readable)
+
+The canonical contract is [`tests/regression/spec/api_spec.json`](../../tests/regression/spec/api_spec.json).
+Run contract tests:
+
+```bash
+uv run pytest tests/regression/spec/test_api_spec.py -q
+cargo test -p probing-rust-regression server_training_observability --no-default-features
+```

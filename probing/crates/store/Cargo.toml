@@ -1,0 +1,14 @@
+[package]
+name = "probing-store"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+tokio = { workspace = true, features = ["time"] }
+thiserror = { workspace = true }

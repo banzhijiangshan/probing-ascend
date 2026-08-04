@@ -1,0 +1,36 @@
+[package]
+name = "probing-gpu"
+description = "Accelerator diagnostics for probing (CUDA, Ascend NPU, Apple Silicon)"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+
+
+[features]
+default = []
+# NVIDIA CUDA via cudarc dynamic-loading (Linux/datacenter only).
+cuda = ["dep:cudarc"]
+
+[dependencies]
+probing-core = { path = "../../core" }
+probing-memtable = { path = "../../memtable" }
+
+anyhow = { workspace = true }
+async-trait = "0.1.83"
+datafusion = { workspace = true }
+log = { workspace = true }
+once_cell = { workspace = true }
+thiserror = { workspace = true }
+libc = "0.2"
+libloading = "0.8"
+
+cudarc = { version = "0.19.7", default-features = false, features = [
+    "dynamic-loading",
+    "driver",
+    "cuda-12080",
+], optional = true }
+
+# macOS-only: Metal + sysctl + ioreg. Not resolved when building for Linux.
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.31.0"

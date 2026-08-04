@@ -1,0 +1,100 @@
+[package]
+name = "web"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+# Dioxus dependencies
+dioxus = { version = "0.7.9", features = ["web"] }
+dioxus-router = "0.7.9"
+dioxus-web = "0.7.9"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+urlencoding = "2.1"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging
+log = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Storage",
+    "HtmlElement",
+    "Blob",
+    "BlobPropertyBag",
+    "Url",
+    "CssStyleDeclaration",
+    "Document",
+    "Element",
+    "DomRect",
+    "HtmlElement",
+    "KeyboardEvent",
+    "EventTarget",
+    "Event",
+    "History",
+    "Location",
+] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+
+# Icons
+icondata = { version = "0.5.0", default-features = false, features = [
+    "ant-design-icons", "css-gg", "simple-icons"
+] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+gloo-timers = "0.3"
+
+# Markdown rendering (agent chat)
+pulldown-cmark = "0.13"
+
+# Local dependencies
+probing-proto = { path = "../probing/proto", default-features = false, features = [] }
+probing-skills = { path = "../probing/crates/skills" }
+async-trait = "0.1"
+async-openai = { version = "0.41.1", default-features = false, features = ["chat-completion", "rustls"] }
+
+# Syntax highlighting for source viewer cards (native/desktop targets only).
+# WASM web builds keep the plain line-gutter fallback — arborium-sysroot does not
+# compile for wasm32-unknown-unknown in current toolchains.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+dioxus-code = { version = "0.1.2", default-features = false, features = [
+    "runtime",
+    "lang-python",
+    "lang-json",
+    "lang-toml",
+] }
+
+# Match workspace root: faster compile, smaller debug artifacts.
+[profile.dev]
+debug = 1
+split-debuginfo = "unpacked"
+codegen-units = 256
+
+[profile.release]
+opt-level = "z"
+debug = false
+# Do not set strip here — dx strips after asset extraction via rust-objcopy,
+# which breaks on some nightly macOS toolchains (missing libLLVM.dylib).
+
+[profile.wasm-dev]
+inherits = "dev"
+opt-level = 1
+
+[profile.server-dev]
+inherits = "dev"
+
+[profile.android-dev]
+inherits = "dev"
