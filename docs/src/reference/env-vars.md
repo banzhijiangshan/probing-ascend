@@ -136,6 +136,7 @@ Non-PROBING-prefixed aliases are also recognized for Megatron compatibility:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PROBING_TORCH_PROFILING` | — | Set to `on` to activate PyTorch module hooks and write `python.torch_trace`. Default when enabled: **5% step sampling** (`rate=0.05`), full-snapshot (`layer_rate=1.0`), **shadow cadence 4:1** (`shadow=4:1` — one baseline step per four probed steps for in-run overhead in `python.torch_step_timing`). Spec is `rate[:layer_rate]` (`layer_rate` = per-layer hit probability on a sampled step); a leading `random:`/`ordered:` token is accepted for back-compat (always `random`). Override with e.g. `1.0`, `0.05:0.1`, `shadow=8:2`, or `shadow=off`. **Backward** timing (`backward=on`) times each module's backward via output/input grad hooks; off by default. |
+| `PROBING_TORCH_PROFILING_RANKS` | `all` | Startup scope for Torch hook initialization: `all`, `none`, `node0` (all local ranks on global-rank-0's node), `local0` (one rank per node), `rank0`/`global0`, or global-rank lists/ranges such as `0,8-15`. Unknown values fail closed. Use `node0` for the large-Ascend workaround. This scope intentionally cannot hot-expand. |
 | `PROBING_TORCHRUN_CLUSTER` | `1` | Enable automatic torchrun cluster registration. Set to `0` to disable. |
 | `PROBING_TORCHRUN_STORE_TIMEOUT` | — | Timeout for torchrun distributed store operations. |
 
@@ -159,6 +160,13 @@ coordinates for SQL JOINs.
 |----------|---------|-------------|
 | `PROBING_FR_ON_WATCHDOG` | `auto` | On NCCL watchdog exceptions, snapshot Flight Recorder into probing tables. |
 | `probing.fr.on_watchdog` | — | Config override for watchdog Flight Recorder snapshot. |
+
+Runtime escalation requires a live tracer. Start with
+`PROBING_TORCH_PROFILING=on,rate=0` when a later
+`SET probing.torch.profiling='on,rate=1.0,...'` is planned. A process whose
+first optimizer step sees profiling disabled has no installed module hooks and
+cannot be hot-enabled; restart it instead. The rank scope above is likewise a
+startup safety boundary.
 
 ### PyTorch Flight Recorder
 

@@ -1,5 +1,7 @@
 # 参考手册
 
+- [论文能力验证查询](capability-validation.zh.md)：A2/A3 相位账本与 A4 `step_windows` 的唯一 SQL 口径。
+
 SQL 表结构、CLI 命令与运行时 API 的权威查阅入口。
 
 | 页面 | 内容 |

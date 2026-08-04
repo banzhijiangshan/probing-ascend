@@ -40,3 +40,10 @@ Probing 读取的全部 `PROBING_*` 环境变量参考（按子系统分组）�
 ## 其余变量
 
 激活、存储、Server、认证、Tracing、采样、NCCL、RDMA、PyTorch、调试等章节与 [英文 env-vars](env-vars.md) 同步；尚未单独翻译。
+
+## PyTorch profiling 的昇腾运维约束
+
+| 变量 | 默认 | 说明 |
+|----------|---------|-------------|
+| `PROBING_TORCH_PROFILING` | — | 若计划运行期升详，启动时必须设 `on,rate=0` 占位。首个 optimizer step 完全禁用时不会安装 module hook，后续 `SET probing.torch.profiling='on,rate=1.0,...'` 不能热启用，只能重启。 |
+| `PROBING_TORCH_PROFILING_RANKS` | `all` | hook 初始化范围：`all`、`none`、`node0`（只在 global rank 0 所在节点的全部 local rank）、`local0`（每节点一个 rank）、`rank0`/`global0`，或 `0,8-15` 形式的 global rank 列表/范围。非法值安全地退化为全不启用。大规模昇腾 workaround 使用 `node0`。该边界必须在进程启动前设置，不能运行期扩张。 |

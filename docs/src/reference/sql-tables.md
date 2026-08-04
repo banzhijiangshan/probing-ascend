@@ -77,9 +77,11 @@ PyTorch module-level forward/step timings and GPU memory snapshots.
 | `role` | Parallel role key, e.g. `dp=2,pp=1,tp=0` |
 | `seq` | Hook sequence within step |
 | `module` | Fully-qualified module name |
-| `stage` | `pre forward`, `post forward`, `pre step`, `post step` |
+| `stage` | `pre/post forward`, `pre/post backward`, `pre/post step` |
 | `duration` | Hook duration (seconds); meaningful on post rows |
 | `time_offset` | Seconds since step time anchor |
+| `wall_time_sec` | Unix seconds captured at the hook boundary; stable across delayed persistence and used for periodic-table time-window joins |
+| `monotonic_time_sec` | Monotonic seconds at the hook boundary; canonical clock for phase-span and gap differences |
 | `allocated` | GPU memory allocated (MB) |
 | `allocated_delta` | Change in allocated since previous hook (MB) |
 | `max_allocated` | Peak allocated (MB) |
@@ -140,7 +142,7 @@ Per-step wall-clock duration for TorchProbe overhead monitoring (probed vs shado
 | `tensor_shape` | Tensor shape string |
 | `tensor_dtype` | Tensor dtype |
 | `bytes` | Tensor bytes communicated |
-| `duration_ms` | Wall time (milliseconds) |
+| `duration_ms` | Python API wall time (milliseconds), not NCCL/HCCL device execution time |
 | `async_op` | 1 if asynchronous collective |
 
 **Global:** `global.python.comm_collective`
@@ -210,9 +212,9 @@ Host CPU and RSS sampling (process and top threads).
 | `ts` | Sample timestamp (microseconds) |
 | `scope` | `process` \| `thread` |
 | `rss_kb` | Resident set size (KB) — process scope only |
-| `cpu_total_pct` | CPU utilization (%) |
+| `cpu_total_pct` | Process scope is usable; Ascend thread-scope values may overflow and are auxiliary only |
 | `comm` | Thread/process name |
-| `wchan` | Kernel wait channel (Linux) |
+| `wchan` | Kernel wait channel (Linux); may be consistently empty on Ascend and must not be the sole blocking signal |
 
 ---
 
@@ -226,7 +228,23 @@ GPU memory and utilization samples.
 | `used_bytes` | Device memory used |
 | `total_bytes` | Device memory total |
 | `mem_used_pct` | Memory used (%) |
-| `gpu_util_pct` | GPU compute utilization (-1 if unavailable) |
+| `gpu_util_pct` | Device duty cycle; includes HCCL spin waits and is not compute load by itself; combine with power and HBM bandwidth (-1 if unavailable) |
+| `aivector_util_pct` | Ascend Aivector utilization; unavailable (`-1`) on the DCMI path |
+| `power_w` | Device power in watts (-1 if unavailable) |
+| `hbm_bw_util_pct` | Ascend HBM bandwidth utilization (-1 if unavailable) |
+
+---
+
+### `gpu.hccs`
+
+Ascend HCCS link counters and bandwidth.
+
+| Column | Description |
+|--------|-------------|
+| `ts` | Sample timestamp (microseconds) |
+| `tx_bytes` / `rx_bytes` | Cumulative byte counters |
+| `tx_bps` / `rx_bps` | Rates derived from adjacent counter samples |
+| `error_count` | Cumulative error counter; use `max`/`last` or a delta across rows, never `sum` |
 
 ---
 

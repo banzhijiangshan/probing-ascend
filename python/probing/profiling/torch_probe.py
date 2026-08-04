@@ -182,6 +182,14 @@ class TorchTrace:
     cached: float = 0.0
     max_cached: float = 0.0
     time_offset: float = 0.0
+    # Host Unix time at the hook boundary. Unlike the table append
+    # timestamp, this remains correct when GPU-event rows are persisted several
+    # steps later. It is the canonical clock for phase gaps and for joining
+    # periodic tables whose ``ts`` uses Unix microseconds.
+    wall_time_sec: float = 0.0
+    # Same boundary on a monotonic clock. Use differences on this column for
+    # phase accounting so wall-clock adjustments cannot create negative spans.
+    monotonic_time_sec: float = 0.0
     duration: float = 0.0
     allocated_delta: float = 0.0
     max_allocated_delta: float = 0.0
@@ -1044,6 +1052,7 @@ class TorchProbe(BaseTracer, Timer, Sampler, PythonTracer, VariableTracer):
         self._step_cycle = 0
         self.shadow_step = False
         self._step_wall_started_at: Optional[float] = None
+        self._completed_step_snapshot = None
         self._backward_wall_start: dict[int, float] = {}
         # Backward grad hooks run on autograd worker threads where the step
         # coordinate is thread-local and reads as 0. Capture the snapshot on the
@@ -1099,6 +1108,8 @@ class TorchProbe(BaseTracer, Timer, Sampler, PythonTracer, VariableTracer):
 
     def _record_step_timing(self, *, is_shadow: bool) -> None:
         """Persist wall-clock step duration for probed vs shadow comparison."""
+        completed_snapshot = self._completed_step_snapshot
+        self._completed_step_snapshot = None
         if self._step_wall_started_at is None:
             return
         # PR-2 B6: at rate=0 (resident phase, no SET yet) non-culprit ranks
@@ -1121,7 +1132,10 @@ class TorchProbe(BaseTracer, Timer, Sampler, PythonTracer, VariableTracer):
             sample_rate=self.rate,
             sample_mode=self.mode,
         )
-        self._stamp_step_role(record)
+        # Closing the train.step span advances the global coordinate before this
+        # row is saved. Stamp the snapshot captured at optimizer post entry so
+        # torch_step_timing and torch_trace remain joinable on the same step.
+        self._stamp_step_role(record, completed_snapshot)
         try:
             record.save()
         except Exception as e:
@@ -1206,7 +1220,7 @@ class TorchProbe(BaseTracer, Timer, Sampler, PythonTracer, VariableTracer):
         return pre_stage
 
     def _open_backward_timer(self, mod) -> None:
-        """Open a backward span + start the timer (no ``pre backward`` row).
+        """Open a backward span, persist its boundary, and start the timer.
 
         Backward is timed on the *same clock as forward*: on an async backend a
         GPU event is recorded here (and another when the module's backward
@@ -1237,6 +1251,19 @@ class TorchProbe(BaseTracer, Timer, Sampler, PythonTracer, VariableTracer):
 
         # Slots 3/4 (allocated, max_allocated) are unused for backward.
         self._open_spans[span_key] = (span_cm, mod, "pre backward", 0.0, 0.0)
+        boundary = mem_stats()
+        self._stamp_step_role(
+            boundary, self._backward_step_snap.get(id(mod))
+        )
+        boundary.seq = self.offset()
+        boundary.module = module_name_str
+        boundary.stage = "pre backward"
+        boundary.time_offset = (
+            0.0 if self.step_start is None else time.time() - self.step_start
+        )
+        boundary.wall_time_sec = time.time()
+        boundary.monotonic_time_sec = time.perf_counter()
+        self.pending.append(DelayedRecord(boundary, None))
         self._backward_wall_start[id(mod)] = self._backward_timer_start()
 
     def _backward_timer_start(self):
@@ -1284,7 +1311,11 @@ class TorchProbe(BaseTracer, Timer, Sampler, PythonTracer, VariableTracer):
         record.seq = self.offset()
         record.module = module_name_str
         record.stage = "post backward"
-        record.time_offset = 0.0
+        record.time_offset = (
+            0.0 if self.step_start is None else time.time() - self.step_start
+        )
+        record.wall_time_sec = time.time()
+        record.monotonic_time_sec = time.perf_counter()
 
         if start_marker is not None and not isinstance(start_marker, float):
             # GPU-event start → record the matching end event and time on the
@@ -1323,6 +1354,8 @@ class TorchProbe(BaseTracer, Timer, Sampler, PythonTracer, VariableTracer):
         module_name_str = self._module_display_name(mod)
         record.module = module_name_str
         record.stage = post_stage
+        record.wall_time_sec = time.time()
+        record.monotonic_time_sec = time.perf_counter()
 
         record.time_offset, events = self.end_timing(mod, post_stage)
         entry = self._open_spans.pop(span_key, None)
@@ -1478,6 +1511,8 @@ class TorchProbe(BaseTracer, Timer, Sampler, PythonTracer, VariableTracer):
         module_name_str = self._module_display_name(mod)
         record.module = module_name_str
         record.stage = stage
+        record.wall_time_sec = time.time()
+        record.monotonic_time_sec = time.perf_counter()
         span_phase = infer_from_stage(stage)
 
         emit_trace_span = self._should_emit_trace_span(mod, span_phase)
@@ -1593,6 +1628,8 @@ class TorchProbe(BaseTracer, Timer, Sampler, PythonTracer, VariableTracer):
             self._begin_train_step_span(optimizer=opt)
             return
 
+        self._completed_step_snapshot = step.snapshot()
+
         # Reclaim earlier sampled steps' GPU timings every optimizer step, off
         # their critical path (runs for shadow / non-sampled / sampled alike).
         self._drain_deferred()
@@ -1626,9 +1663,10 @@ class TorchProbe(BaseTracer, Timer, Sampler, PythonTracer, VariableTracer):
 
         self._finish_open_stages()
 
-        # ``pre backward`` rows carry no duration (backward is wall-clock timed) —
-        # drop them so the table is not flooded with 0s.
-        records = [p for p in self.pending if p.record.stage != "pre backward"]
+        # Keep boundary-only ``pre backward`` rows: together with their post
+        # rows they make the backward span and the post-backward wait gap
+        # reconstructable without relying on delayed append timestamps.
+        records = list(self.pending)
         self.pending.clear()
 
         if self.use_gpu_events:
