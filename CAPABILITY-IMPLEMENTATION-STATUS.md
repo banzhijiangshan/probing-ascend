@@ -1,5 +1,7 @@
 # Capability handoff implementation status
 
+中文开发改动说明见 [`CAPABILITY-DEVELOPMENT-CHANGES_zh.md`](CAPABILITY-DEVELOPMENT-CHANGES_zh.md)。
+
 Baseline: `probing-capability-handoff` dated 2026-08-03. This file separates
 repository-complete work from hardware acceptance; an implementation is not
 reported as experimentally accepted until its stated NPU/card-count criterion
