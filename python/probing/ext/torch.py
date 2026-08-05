@@ -152,12 +152,15 @@ def optimizer_step_post_hook(optimizer, *args, **kwargs):
             hooks[optimizer] = None
             return
 
-        from probing.profiling.torch import install_hooks
+        from probing.profiling.torch import (
+            install_module_hooks,
+            install_optimizer_hooks,
+        )
         from probing.profiling.torch.module_utils import get_toplevel_module
 
         tracer = TorchProbe(config=config)
         log.info(
-            "Torch profiling enabled: mode=%s rate=%s shadow=%s:%s backward=%s tracepy=%s sync=%s exprs=%s",
+            "Torch profiling enabled: mode=%s rate=%s shadow=%s:%s backward=%s tracepy=%s sync=%s exprs=%s lazy_module_hooks=True",
             config.mode,
             config.rate,
             config.shadow_normal,
@@ -168,10 +171,15 @@ def optimizer_step_post_hook(optimizer, *args, **kwargs):
             config.exprs or "",
         )
 
+        # Discovery needs one forward pass with module hooks; after finalize they
+        # are removed and reattached only on sampled (non-shadow) steps.
         models = get_toplevel_module()
         for model in models:
-            install_hooks(model, tracer=tracer, backward=config.backward)
-        install_hooks(opt=optimizer, tracer=tracer, backward=config.backward)
+            install_module_hooks(model, tracer=tracer, backward=config.backward)
+        install_optimizer_hooks(
+            opt=optimizer, tracer=tracer, backward=config.backward
+        )
+        tracer._module_hooks_installed = True
         hooks[optimizer] = tracer
         hooks["_last_spec"] = spec or ""
         return

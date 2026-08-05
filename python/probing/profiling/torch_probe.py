@@ -1063,6 +1063,7 @@ class TorchProbe(BaseTracer, Timer, Sampler, PythonTracer, VariableTracer):
         # (see ``_drain_deferred``); each item is a ``DelayedRecord`` tagged with
         # ``_defer_cycle``.
         self._deferred: list = []
+        self._module_hooks_installed = False
         # ``current_role()`` rescans the whole environment on every call (~70us);
         # the role is constant within a step, so resolve it once per step (see
         # ``_mark_step_wall_start``) and reuse it for every stamped row.
@@ -1099,6 +1100,35 @@ class TorchProbe(BaseTracer, Timer, Sampler, PythonTracer, VariableTracer):
         self._step_cycle += 1
         self._refresh_shadow_flag()
 
+    def _upcoming_step_needs_module_hooks(self) -> bool:
+        """Whether the next forward pass should carry module hooks."""
+        if not self.finalized:
+            return True
+        self._planned_cycle = None
+        self._ensure_step_plan()
+        return bool(self.sampled_step and not self.shadow_step)
+
+    def _sync_module_hooks_for_upcoming_step(self) -> None:
+        """Install module hooks only on sampled steps; remove them otherwise."""
+        from probing.profiling.torch import (
+            install_module_hooks,
+            module_hooks_installed,
+            uninstall_module_hooks,
+        )
+        from probing.profiling.torch.module_utils import get_toplevel_module
+
+        need = self._upcoming_step_needs_module_hooks()
+        installed = module_hooks_installed()
+        if need and not installed:
+            for model in get_toplevel_module():
+                install_module_hooks(
+                    model, tracer=self, backward=self.config.backward
+                )
+            self._module_hooks_installed = True
+        elif not need and installed:
+            uninstall_module_hooks()
+            self._module_hooks_installed = False
+
     def _mark_step_wall_start(self) -> None:
         self._step_wall_started_at = time.perf_counter()
         # Refresh the per-step role cache (runs once per step, on every branch:
@@ -1109,6 +1139,8 @@ class TorchProbe(BaseTracer, Timer, Sampler, PythonTracer, VariableTracer):
     def _record_step_timing(self, *, is_shadow: bool) -> None:
         """Persist wall-clock step duration for probed vs shadow comparison."""
         completed_snapshot = self._completed_step_snapshot
+        if completed_snapshot is None:
+            completed_snapshot = step.snapshot()
         self._completed_step_snapshot = None
         if self._step_wall_started_at is None:
             return
@@ -1621,18 +1653,21 @@ class TorchProbe(BaseTracer, Timer, Sampler, PythonTracer, VariableTracer):
             return
         if not self.finalized:
             self.finalize_discovery()
+            from probing.profiling.torch import uninstall_module_hooks
+
+            uninstall_module_hooks()
+            self._module_hooks_installed = False
             self._step_cycle = 0
             self._refresh_shadow_flag()
             self.curr_step = step.micro_step
             self._mark_step_wall_start()
             self._begin_train_step_span(optimizer=opt)
+            self._sync_module_hooks_for_upcoming_step()
             return
 
-        self._completed_step_snapshot = step.snapshot()
-
-        # Reclaim earlier sampled steps' GPU timings every optimizer step, off
-        # their critical path (runs for shadow / non-sampled / sampled alike).
-        self._drain_deferred()
+        if self._deferred:
+            # Reclaim earlier sampled steps' GPU timings off their critical path.
+            self._drain_deferred()
 
         if self.shadow_step:
             self._end_train_step_span()
@@ -1642,6 +1677,7 @@ class TorchProbe(BaseTracer, Timer, Sampler, PythonTracer, VariableTracer):
             self._record_step_timing(is_shadow=True)
             self._advance_step_cycle_for_next()
             self._mark_step_wall_start()
+            self._sync_module_hooks_for_upcoming_step()
             return
 
         self._end_train_step_span()
@@ -1657,8 +1693,11 @@ class TorchProbe(BaseTracer, Timer, Sampler, PythonTracer, VariableTracer):
             self._record_step_timing(is_shadow=False)
             self._advance_step_cycle_for_next()
             self._mark_step_wall_start()
+            self._sync_module_hooks_for_upcoming_step()
             return
 
+        # Sampled step: capture step coordinate before span close advances it.
+        self._completed_step_snapshot = step.snapshot()
         super().post_step_hook(opt, args, kwargs)
 
         self._finish_open_stages()
@@ -1691,6 +1730,7 @@ class TorchProbe(BaseTracer, Timer, Sampler, PythonTracer, VariableTracer):
         self._record_step_timing(is_shadow=False)
         self._advance_step_cycle_for_next()
         self._mark_step_wall_start()
+        self._sync_module_hooks_for_upcoming_step()
 
 
 def set_sampling_mode(mode):
