@@ -2,6 +2,23 @@
 
 本分支在 upstream `master` 基础上，为华为昇腾 NPU 环境增加**轻量适配**，不改动 CUDA 路径。
 
+## 大规模 Torch profiling 初始化范围
+
+在大规模昇腾作业上，全 rank 同时 import 并注册 Torch profiling hook 会把单
+rank 的低概率初始化失败放大为整作业失败。所有 rank 仍可保持 `PROBING=2`，但用
+下面一个开关把昂贵的 hook 初始化限制到 rank 0 所在节点：
+
+```bash
+export PROBING_TORCH_PROFILING=on,rate=1.0,backward=on
+export PROBING_TORCH_PROFILING_RANKS=node0
+```
+
+也支持 `local0`、`rank0` 和显式 global rank 列表/范围。此开关是启动期安全边界，
+不是运行期控制面；非法值会 fail-closed，避免拼写错误意外恢复全 rank 初始化。
+
+运行期从常驻档升到详采档时，启动配置必须使用 `on,rate=0` 占位。若首个 optimizer
+step 完全禁用 profiling，则没有 live tracer，后续 `SET` 不能补装 hook。
+
 ## 改动摘要
 
 | 区域 | 改动 |

@@ -7,6 +7,95 @@ import probing
 hooks = {}
 
 
+def _env_int(*names: str) -> Optional[int]:
+    """Return the first valid integer from ``names``."""
+    for name in names:
+        raw = os.environ.get(name)
+        if raw is None:
+            continue
+        try:
+            return int(raw)
+        except ValueError:
+            continue
+    return None
+
+
+def _global_rank() -> Optional[int]:
+    return _env_int("RANK", "PMI_RANK", "OMPI_COMM_WORLD_RANK")
+
+
+def _local_rank() -> Optional[int]:
+    return _env_int("LOCAL_RANK", "MPI_LOCALRANKID", "OMPI_COMM_WORLD_LOCAL_RANK")
+
+
+def _node_rank() -> Optional[int]:
+    node = _env_int("GROUP_RANK", "NODE_RANK")
+    if node is not None:
+        return node
+    rank = _global_rank()
+    local_world = _env_int("LOCAL_WORLD_SIZE")
+    if rank is not None and local_world is not None and local_world > 0:
+        return rank // local_world
+    return None
+
+
+def _rank_in_interval(token: str, rank: Optional[int]) -> bool:
+    if rank is None:
+        return False
+    if "-" not in token:
+        try:
+            return rank == int(token)
+        except ValueError:
+            return False
+    left, right = token.split("-", 1)
+    try:
+        start, end = int(left), int(right)
+    except ValueError:
+        return False
+    return min(start, end) <= rank <= max(start, end)
+
+
+def torch_profiling_rank_selected(selector: Optional[str] = None) -> bool:
+    """Whether this process may initialize the expensive Torch profiler.
+
+    ``PROBING_TORCH_PROFILING_RANKS`` is a startup-time safety boundary for
+    large distributed jobs.  It accepts ``all`` (default), ``none``, ``node0``
+    (all local ranks on the node containing global rank 0), ``local0`` (one
+    process per node), ``rank0``/``global0``, or comma-separated global ranks
+    and inclusive ranges such as ``0,8-15``.
+
+    Unknown selectors fail closed.  This is intentional: a typo must not turn a
+    scoped 512-rank launch back into an all-rank profiler initialization.
+    """
+    raw = (
+        selector
+        if selector is not None
+        else os.environ.get("PROBING_TORCH_PROFILING_RANKS", "all")
+    )
+    normalized = str(raw).strip().lower()
+    if normalized in ("", "all", "*"):
+        return True
+    if normalized in ("none", "off", "false", "0-ranks"):
+        return False
+    if normalized == "node0":
+        node = _node_rank()
+        # Single-process/non-torchrun launches remain usable.
+        return node == 0 or (node is None and (_global_rank() in (None, 0)))
+    if normalized == "local0":
+        local = _local_rank()
+        return local == 0 or (local is None and (_global_rank() in (None, 0)))
+    if normalized in ("rank0", "global0"):
+        return _global_rank() in (None, 0)
+
+    rank = _global_rank()
+    tokens = [token.strip() for token in normalized.split(",") if token.strip()]
+    if not tokens or any(
+        not token.replace("-", "", 1).isdigit() for token in tokens
+    ):
+        return False
+    return any(_rank_in_interval(token, rank) for token in tokens)
+
+
 def _torch_profiling_spec() -> Optional[str]:
     """Resolve torch profiling spec from config, falling back to the env var.
 
@@ -14,6 +103,8 @@ def _torch_profiling_spec() -> Optional[str]:
     the first ``optimizer.step()`` can run before that finishes. Reading the env
     here avoids creating a tracer without ``backward=on`` (and other flags).
     """
+    if not torch_profiling_rank_selected():
+        return None
     spec = probing.config.get_str("probing.torch.profiling")
     if spec is not None and str(spec).strip():
         return str(spec).strip()
@@ -61,12 +152,15 @@ def optimizer_step_post_hook(optimizer, *args, **kwargs):
             hooks[optimizer] = None
             return
 
-        from probing.profiling.torch import install_hooks
+        from probing.profiling.torch import (
+            install_module_hooks,
+            install_optimizer_hooks,
+        )
         from probing.profiling.torch.module_utils import get_toplevel_module
 
         tracer = TorchProbe(config=config)
         log.info(
-            "Torch profiling enabled: mode=%s rate=%s shadow=%s:%s backward=%s tracepy=%s sync=%s exprs=%s",
+            "Torch profiling enabled: mode=%s rate=%s shadow=%s:%s backward=%s tracepy=%s sync=%s exprs=%s lazy_module_hooks=True",
             config.mode,
             config.rate,
             config.shadow_normal,
@@ -77,10 +171,15 @@ def optimizer_step_post_hook(optimizer, *args, **kwargs):
             config.exprs or "",
         )
 
+        # Discovery needs one forward pass with module hooks; after finalize they
+        # are removed and reattached only on sampled (non-shadow) steps.
         models = get_toplevel_module()
         for model in models:
-            install_hooks(model, tracer=tracer, backward=config.backward)
-        install_hooks(opt=optimizer, tracer=tracer, backward=config.backward)
+            install_module_hooks(model, tracer=tracer, backward=config.backward)
+        install_optimizer_hooks(
+            opt=optimizer, tracer=tracer, backward=config.backward
+        )
+        tracer._module_hooks_installed = True
         hooks[optimizer] = tracer
         hooks["_last_spec"] = spec or ""
         return
@@ -155,6 +254,16 @@ _hook_registered = False
 def init():
     global _hook_registered
     if _hook_registered:
+        return
+    if not torch_profiling_rank_selected():
+        logging.getLogger(__name__).info(
+            "Torch profiling initialization skipped on rank=%s local_rank=%s "
+            "node_rank=%s (PROBING_TORCH_PROFILING_RANKS=%r)",
+            _global_rank(),
+            _local_rank(),
+            _node_rank(),
+            os.environ.get("PROBING_TORCH_PROFILING_RANKS", "all"),
+        )
         return
     _hook_registered = True
 

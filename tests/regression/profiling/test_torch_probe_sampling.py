@@ -1,6 +1,7 @@
 """TorchProbe sampling: anchor pre/post pairing and step cleanup."""
 
 import time
+from types import SimpleNamespace
 
 from probing.profiling.torch_probe import (
     DEFAULT_SAMPLE_RATE,
@@ -107,6 +108,7 @@ def test_record_step_timing_writes_shadow_and_probed(monkeypatch):
                 self.step_duration_sec,
                 self.shadow_normal,
                 self.shadow_baseline,
+                self.local_step,
             )
         )
 
@@ -116,6 +118,14 @@ def test_record_step_timing_writes_shadow_and_probed(monkeypatch):
     )
 
     tracer, _, _ = _ready_tracer()
+    tracer._completed_step_snapshot = SimpleNamespace(
+        micro_step=14,
+        local_step=7,
+        global_step=7,
+        micro_batches=2,
+        rank=3,
+        world_size=8,
+    )
     tracer._mark_step_wall_start()
     time.sleep(0.01)
     tracer._record_step_timing(is_shadow=False)
@@ -127,6 +137,7 @@ def test_record_step_timing_writes_shadow_and_probed(monkeypatch):
     assert saved[0][0] == 0
     assert saved[0][1] == 1
     assert saved[0][2] > 0
+    assert saved[0][5] == 7
     assert saved[1][0] == 1
     assert saved[1][1] == 0
     assert saved[1][2] > 0
@@ -598,6 +609,15 @@ def test_backward_hooks_record_when_enabled():
     saved = _backward_saved(tracer)
     post = next(r for r in saved if r.get("stage") == "post backward")
     assert post.get("duration", 0) > 0
+    assert post.get("time_offset", 0) >= 0
+    assert post.get("wall_time_sec", 0) > 0
+    assert post.get("monotonic_time_sec", 0) > 0
+    pre = next(
+        p.record for p in tracer.pending if p.record.stage == "pre backward"
+    )
+    assert pre.wall_time_sec > 0
+    assert pre.wall_time_sec <= post["wall_time_sec"]
+    assert pre.monotonic_time_sec <= post["monotonic_time_sec"]
 
 
 def test_backward_tensor_hooks_with_inplace_relu():

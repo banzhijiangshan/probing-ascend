@@ -627,6 +627,45 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn capability_semantic_warnings_are_queryable() {
+        let parsed = build_semantic_catalog().unwrap();
+        let expected = [
+            ("gpu", "hccs", "error_count", "禁止 sum"),
+            ("gpu", "utilization", "gpu_util_pct", "HCCL 自旋"),
+            ("gpu", "utilization", "aivector_util_pct", "DCMI 路径未采集"),
+            (
+                "python",
+                "comm_collective",
+                "duration_ms",
+                "非 NCCL 执行时间",
+            ),
+            ("cpu", "utilization", "wchan", "可能恒为空"),
+            (
+                "cpu",
+                "utilization",
+                "cpu_total_pct",
+                "线程 scope 实测可能溢出",
+            ),
+        ];
+        for (schema, table, column, warning) in expected {
+            let row = parsed
+                .column_rows
+                .iter()
+                .find(|row| {
+                    row.table_schema == schema
+                        && row.table_name == table
+                        && row.column_name == column
+                })
+                .unwrap_or_else(|| panic!("missing {schema}.{table}.{column}"));
+            assert!(
+                row.description.contains(warning),
+                "{schema}.{table}.{column} missing warning {warning:?}: {}",
+                row.description
+            );
+        }
+    }
+
     #[tokio::test]
     async fn install_registers_docs_tables() {
         let ctx = SessionContext::new();

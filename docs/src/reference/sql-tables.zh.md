@@ -70,9 +70,11 @@ PyTorch 模块级 forward/step 耗时与 GPU 显存快照。
 | `role` | 并行角色 key，如 `dp=2,pp=1,tp=0` |
 | `seq` | 步内 hook 序号 |
 | `module` | 模块全名 |
-| `stage` | `pre forward`、`post forward`、`pre step`、`post step` |
+| `stage` | `pre/post forward`、`pre/post backward`、`pre/post step` |
 | `duration` | hook 耗时（秒）；post 行有效 |
 | `time_offset` | 相对 step 时间锚点（秒） |
+| `wall_time_sec` | hook 边界的 Unix 秒；异步事件延迟落盘也不改变，用于周期表时间窗关联 |
+| `monotonic_time_sec` | hook 边界的单调时钟秒；相位跨度和 gap 的规范差分时基 |
 | `allocated` | GPU 已分配显存（MB） |
 | `allocated_delta` | 相对上一 hook 的 allocated 变化（MB） |
 | `max_allocated` | 峰值 allocated（MB） |
@@ -132,7 +134,7 @@ TorchProbe 每步墙钟耗时（probed step 与 shadow 基线 step），用于�
 | `tensor_shape` | 张量 shape |
 | `tensor_dtype` | 张量 dtype |
 | `bytes` | 通信字节数 |
-| `duration_ms` | 墙钟时间（毫秒） |
+| `duration_ms` | Python API 调用墙钟（毫秒），不是 NCCL/HCCL 设备执行时间 |
 | `async_op` | 1 表示异步 collective |
 
 **Global：** `global.python.comm_collective`
@@ -198,9 +200,9 @@ Python + native 混合栈（**瞬时**，非历史全量）。
 | `ts` | 采样时间（微秒） |
 | `scope` | `process` \| `thread` |
 | `rss_kb` | 常驻内存（KB），仅 process |
-| `cpu_total_pct` | CPU 利用率（%） |
+| `cpu_total_pct` | process scope 可用；Ascend 线程 scope 实测可能溢出，只作辅助 |
 | `comm` | 线程/进程名 |
-| `wchan` | 内核等待通道（Linux） |
+| `wchan` | 内核等待通道（Linux）；Ascend 实测可能恒为空，不得作唯一阻塞判据 |
 
 ---
 
@@ -214,7 +216,23 @@ GPU 显存与利用率采样。
 | `used_bytes` | 已用显存 |
 | `total_bytes` | 总显存 |
 | `mem_used_pct` | 显存使用率（%） |
-| `gpu_util_pct` | GPU 算力利用率（不可用为 -1） |
+| `gpu_util_pct` | 设备 duty cycle；含 HCCL 自旋，不等于计算负载，须联合功率与 HBM 带宽（不可用为 -1） |
+| `aivector_util_pct` | Ascend Aivector 利用率；DCMI 路径未采集，返回 -1 |
+| `power_w` | 功率（W；不可用为 -1） |
+| `hbm_bw_util_pct` | Ascend HBM 带宽利用率（不可用为 -1） |
+
+---
+
+### `gpu.hccs`
+
+Ascend HCCS 链路计数与带宽。
+
+| 列 | 说明 |
+|----|------|
+| `ts` | 采样时间（微秒） |
+| `tx_bytes` / `rx_bytes` | 累计字节计数器 |
+| `tx_bps` / `rx_bps` | 相邻采样差分得到的速率 |
+| `error_count` | 累计错误计数器；跨行只能取 `max`/`last` 或做差，禁止 `sum` |
 
 ---
 
