@@ -63,7 +63,7 @@ jobs:
           target: ${{ matrix.target }}
           args: >-
             --release --out dist --zig --compatibility manylinux2014
-            --auditwheel repair --local-version ${{ needs.meta.outputs.local_version }}
+            --auditwheel repair
             --features extension-module,gpu,gpu-cuda,kmsg
           sccache: "true"
           manylinux: auto
