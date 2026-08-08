@@ -44,3 +44,29 @@ def test_disabled_hook_does_not_import_package() -> None:
 
 def test_nonmatching_script_does_not_import_package() -> None:
     assert _imported_modules("another_training_script.py") == []
+
+
+def test_torchrun_retargets_followed_mode_to_training_script() -> None:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(PYTHON_ROOT)
+    env["PROBING"] = "1"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            (
+                "import os, sys; "
+                "sys.argv = ['/opt/bin/torchrun', '--nproc-per-node=8', "
+                "'train_bench_probe_npu.py']; "
+                "import probing_hook; print(os.environ['PROBING']); "
+                "print(any(m == 'probing' or m.startswith('probing.') "
+                "for m in sys.modules))"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.stdout.splitlines() == ["train_bench_probe_npu.py", "False"]

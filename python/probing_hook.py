@@ -50,8 +50,23 @@ def _should_import_probing() -> bool:
     script = _script_name()
     if token in ("0", "", "false", "no", "off"):
         return False
-    # torchrun must pass PROBING through to the rank processes.
+    # torchrun must pass Probing through to the rank processes.  Retarget
+    # followed mode to the training script when it is visible in argv so
+    # elastic helper Python processes do not also start an engine.
     if re.search("torchrun", script) is not None:
+        if token in ("1", "followed"):
+            targets = [
+                os.path.basename(candidate)
+                for candidate in sys.argv[1:]
+                if candidate and candidate.endswith(".py")
+            ]
+            if targets:
+                target = targets[-1]
+                if raw.startswith("init:"):
+                    init_spec = raw.split("+", 1)[0]
+                    os.environ["PROBING"] = f"{init_spec}+{target}"
+                else:
+                    os.environ["PROBING"] = target
         return False
     if script == "probing" or _is_lightweight_entrypoint():
         return False
