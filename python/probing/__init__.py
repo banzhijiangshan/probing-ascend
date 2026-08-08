@@ -29,6 +29,7 @@ elif is_probing_cli():
     __all__ = ["VERSION", "cli_main"]
 else:
     import atexit
+    import threading
 
     from probing.web_assets import configure_assets_root
 
@@ -50,7 +51,11 @@ else:
         except Exception:
             pass
 
-    atexit.register(_disable_vm_tracer_at_exit)
+    # CPython invokes threading callbacks before joining non-daemon threads.
+    # Removing the eval-frame hook at that point prevents late worker frames
+    # from entering the native callback during interpreter finalization.
+    _register_thread_exit = getattr(threading, "_register_atexit", atexit.register)
+    _register_thread_exit(_disable_vm_tracer_at_exit)
 
     def is_enabled():
         return _core.is_enabled()
