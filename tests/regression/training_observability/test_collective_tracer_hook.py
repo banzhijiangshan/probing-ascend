@@ -67,6 +67,26 @@ class TestCollectiveTracerHook:
         assert rows[0]["op"] == "all_reduce"
         assert rows[0]["group_size"] == 4
         assert rows[0]["bytes"] > 0
+        assert rows[0]["timing_source"] == "host_api"
+
+    def test_sync_timing_is_labeled_as_device_completion(
+        self, mock_dist, mock_tensor
+    ):
+        tracer = CollectiveTracer(
+            mode=CommRecordMode.LITE,
+            trace_event=False,
+            cuda_sync=True,
+        )
+        tracer._maybe_sync = MagicMock()
+        wrapper = tracer._trace_wrapper("all_reduce", lambda tensor: None)
+
+        with patch("probing.profiling.collective.coll.dist", mock_dist):
+            wrapper(mock_tensor)
+
+        rows = table_rows(CommCollective, 5)
+        assert len(rows) == 1
+        assert rows[0]["timing_source"] == "device_sync_wall"
+        assert tracer._maybe_sync.call_count == 2
 
     def test_full_mode_opens_live_span_during_call(self, mock_dist, mock_tensor):
         tracer = CollectiveTracer(

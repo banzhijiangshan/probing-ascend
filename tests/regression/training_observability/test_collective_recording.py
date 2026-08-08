@@ -42,6 +42,7 @@ class TestCommCollectiveRecording:
         assert rows[0]["op"] == "all_reduce"
         assert rows[0]["group_size"] == 8
         assert rows[0]["duration_ms"] == pytest.approx(12.5)
+        assert rows[0]["timing_source"] == "host_api"
         assert json.loads(rows[0]["participate_ranks"]) == list(range(8))
 
         events = table_rows(TraceEvent, 10)
@@ -62,6 +63,7 @@ class TestCommCollectiveRecording:
         assert len(rows) == 1
         assert rows[0]["op"] == "all_reduce"
         assert rows[0]["duration_ms"] == pytest.approx(3.5)
+        assert rows[0]["timing_source"] == "host_api"
         assert rows[0]["participate_ranks"] == ""
 
     def test_lite_mode_writes_closed_trace_pair_by_default(self):

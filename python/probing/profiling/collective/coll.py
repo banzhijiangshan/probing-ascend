@@ -1,8 +1,10 @@
 """Torch-API-level collective tracer (legacy, coarse).
 
-Monkey-patches ``torch.distributed`` collectives and measures **Python
-wall-clock around the API call** (for ``async_op`` the timing closes at
-``work.wait()``). This is *launch/API* timing — not NCCL execution time.
+Monkey-patches ``torch.distributed`` collectives and measures Python
+wall-clock around the API call (for ``async_op`` the timing closes at
+``work.wait()``).  Rows expose ``timing_source=host_api`` by default.  With
+``probing.torch.collective.sync=1`` they expose
+``timing_source=device_sync_wall`` and include device completion.
 
 For precise, NCCL-native data (kernel/proxy-reconstructed execution time,
 wait decomposition, bandwidth) use the NCCL profiler plugin's ``nccl.*``
@@ -253,11 +255,13 @@ class CollectiveTracer:
         self.global_rank = dist.get_rank() if dist.is_initialized() else 0
         async_op = bool(kwargs.get("async_op", False))
         tensor_shape, tensor_dtype, nbytes = self._tensor_details(args, kwargs)
+        timing_source = "device_sync_wall" if self.cuda_sync else "host_api"
 
         if self.mode == CommRecordMode.LITE:
             record_comm_lite(
                 op=func_name,
                 duration_ms=duration_ms,
+                timing_source=timing_source,
                 group_rank=group_rank,
                 group_size=group_size,
                 participate_ranks=(
@@ -286,6 +290,7 @@ class CollectiveTracer:
                 meta,
                 op=func_name,
                 duration_ms=duration_ms,
+                timing_source=timing_source,
                 group_rank=group_rank,
                 group_size=group_size,
             )

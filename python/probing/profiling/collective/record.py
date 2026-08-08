@@ -1,7 +1,10 @@
 """Persisted collective communication rows (query as ``python.comm_collective``).
 
-**Timing semantics**: ``duration_ms`` is Python wall-clock around the
-``torch.distributed`` API call (launch/API layer) — not NCCL execution time.
+**Timing semantics**: inspect ``timing_source`` together with ``duration_ms``.
+The default ``host_api`` source is Python wall-clock around the
+``torch.distributed`` API call (launch/API layer) — not NCCL/HCCL execution
+time.  ``device_sync_wall`` means device synchronization enclosed the call,
+so the wall time includes collective completion (and synchronization cost).
 Precise NCCL-native timing lives in ``nccl.coll_perf`` / ``nccl.proxy_ops``
 (NCCL profiler plugin); this table is the coarse fallback and carries the
 training-step context (``global_step`` etc.) that the plugin tables lack.
@@ -57,6 +60,7 @@ class CommCollective:
     tensor_dtype: str = ""
     bytes: int = 0
     duration_ms: float = 0.0
+    timing_source: str = "host_api"
     async_op: int = 0
 
 
@@ -156,6 +160,7 @@ def record_comm_lite(
     *,
     op: str,
     duration_ms: float,
+    timing_source: str = "host_api",
     group_rank: int,
     group_size: int,
     participate_ranks: Optional[Iterable[int]] = None,
@@ -192,7 +197,9 @@ def record_comm_lite(
         nbytes=nbytes,
         async_op=async_op,
     )
-    CommCollective(duration_ms=duration_ms, **fields).save()
+    CommCollective(
+        duration_ms=duration_ms, timing_source=timing_source, **fields
+    ).save()
     try:
         from probing._core import note_last_comm
 
@@ -250,6 +257,7 @@ def finish_comm_span(
     *,
     op: str,
     duration_ms: float,
+    timing_source: str = "host_api",
     group_rank: int,
     group_size: int,
 ) -> None:
@@ -258,4 +266,6 @@ def finish_comm_span(
         cm.__exit__(None, None, None)
 
     row = {**meta, "op": op, "group_rank": group_rank, "group_size": group_size}
-    CommCollective(duration_ms=duration_ms, **row).save()
+    CommCollective(
+        duration_ms=duration_ms, timing_source=timing_source, **row
+    ).save()
