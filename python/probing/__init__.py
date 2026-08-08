@@ -28,6 +28,8 @@ elif is_probing_cli():
     cli_main = _core.cli_main
     __all__ = ["VERSION", "cli_main"]
 else:
+    import atexit
+
     from probing.web_assets import configure_assets_root
 
     configure_assets_root()
@@ -40,6 +42,15 @@ else:
     cli_main = _core.cli_main
     enable_tracer = _core.enable_tracer
     disable_tracer = _core.disable_tracer
+
+    def _disable_vm_tracer_at_exit(_disable=_core.disable_tracer):
+        """Remove the eval-frame callback before CPython finalizes worker threads."""
+        try:
+            _disable()
+        except Exception:
+            pass
+
+    atexit.register(_disable_vm_tracer_at_exit)
 
     def is_enabled():
         return _core.is_enabled()
