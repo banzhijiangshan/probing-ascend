@@ -14,7 +14,7 @@ use thiserror::Error;
 use super::backend::{discover_backends, selected_backends, GpuBackend, GpuMemorySample};
 
 #[cfg(feature = "cuda")]
-use super::backend::cuda::read_utilization_by_index;
+use super::backend::read_utilization_by_index;
 
 #[cfg(all(not(target_os = "macos"), not(windows)))]
 use super::backend::read_npu_utilization_by_index;
