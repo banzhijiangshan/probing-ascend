@@ -56,6 +56,12 @@ else:
     # from entering the native callback during interpreter finalization.
     _register_thread_exit = getattr(threading, "_register_atexit", atexit.register)
     _register_thread_exit(_disable_vm_tracer_at_exit)
+    # ``multiprocessing`` fork children terminate through ``os._exit`` and do
+    # not run Python atexit callbacks.  They inherit CPython's eval-frame
+    # pointer, however, so retire it immediately in the child.  A later exec
+    # can activate Probing normally through the wheel's site hook.
+    if hasattr(os, "register_at_fork"):
+        os.register_at_fork(after_in_child=_disable_vm_tracer_at_exit)
 
     def is_enabled():
         return _core.is_enabled()
