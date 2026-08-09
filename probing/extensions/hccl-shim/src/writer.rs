@@ -18,6 +18,13 @@ use crate::tables::{
 const CHUNK_SIZE: u32 = 16 * 1024;
 const NUM_CHUNKS: u32 = 32;
 
+fn process_rank() -> i32 {
+    std::env::var("RANK")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(-1)
+}
+
 macro_rules! open_table {
     ($self:ident, $field:ident, $failed:ident, $logged:ident, $file:expr, $schema:expr) => {{
         if $self.$field.is_none() && !$self.$failed.load(Ordering::Relaxed) {
@@ -179,8 +186,53 @@ impl HcclWriter {
                     Value::I32(0),
                     Value::I32(0),
                     Value::I32(0),
+                    Value::I32(process_rank()),
                 ]);
             }
+        }
+    }
+
+    /// Record an HCCL API intercepted directly through ``LD_PRELOAD``.
+    ///
+    /// CANN only emits MSProf callbacks while its profiler is active.  That
+    /// made the original shim blind during normal DDP training.  Direct API
+    /// rows keep the resident path lightweight and cover collectives launched
+    /// inside PyTorch's C++ reducer (which Python monkey-patching cannot see).
+    #[cfg(target_os = "linux")]
+    pub fn record_direct_collective(
+        &mut self,
+        op_name: &str,
+        begin_ns: u64,
+        end_ns: u64,
+        count: u64,
+        data_type: i32,
+    ) {
+        let mut hash = 0xcbf29ce484222325_u64;
+        for byte in op_name.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        let thread_id = unsafe { libc::syscall(libc::SYS_gettid) as i32 };
+        let duration = end_ns.saturating_sub(begin_ns) as i64;
+        if let Ok(table) = self.open_collectives() {
+            table.push_row(&[
+                Value::I64(end_ns as i64),
+                Value::I32(thread_id),
+                Value::Str("api_direct"),
+                Value::I64(begin_ns as i64),
+                Value::I64(end_ns as i64),
+                Value::I64(duration),
+                Value::U64(hash),
+                Value::Str(op_name),
+                Value::U64(0),
+                Value::U64(0),
+                Value::U64(count),
+                Value::I32(data_type),
+                Value::I32(0),
+                Value::I32(0),
+                Value::I32(0),
+                Value::I32(process_rank()),
+            ]);
         }
     }
 
@@ -208,6 +260,7 @@ impl HcclWriter {
             Value::I32(op.relay as i32),
             Value::I32(op.retry as i32),
             Value::I32(header.type_id as i32),
+            Value::I32(process_rank()),
         ]);
     }
 

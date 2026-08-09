@@ -338,7 +338,14 @@ async fn fanout_node_tier(sql: &str, hierarchical: bool) -> anyhow::Result<Fanou
 
     let host = local_host_label();
     let addr = probing_core::core::cluster::local_addr_label();
-    let local_rank = cluster_rank_for_endpoint(&host, &addr);
+    let local_rank = cluster_rank_for_endpoint(&host, &addr).or_else(|| {
+        // The listener is commonly recorded as 0.0.0.0:<port>, while the
+        // registry contains POD_IP:<port> or an explicit advertised address.
+        // In that case endpoint lookup cannot recover our identity.  RANK is
+        // authoritative inside torchrun and is exactly the stable fallback
+        // needed to prevent querying the coordinator a second time.
+        std::env::var("RANK").ok()?.parse::<i32>().ok()
+    });
 
     let mut nodes_failed = Vec::new();
     let mut parts = Vec::new();
@@ -514,7 +521,8 @@ async fn broadcast_fanout_query(
 
     let host = local_host_label();
     let addr = probing_core::core::cluster::local_addr_label();
-    let local_rank = cluster_rank_for_endpoint(&host, &addr);
+    let local_rank = cluster_rank_for_endpoint(&host, &addr)
+        .or_else(|| std::env::var("RANK").ok()?.parse::<i32>().ok());
     let mut parts = vec![tag_dataframe(
         with_fanout_scope(FanoutScope::Local, || {
             tokio::task::block_in_place(|| {
@@ -537,6 +545,12 @@ async fn broadcast_fanout_query(
                 .into_iter()
                 .filter(probing_core::core::cluster::is_node_alive)
                 .filter(|node| !local_addrs.contains(&node.addr))
+                // A server may advertise its routable pod IP while the HTTP
+                // listener is registered as 0.0.0.0.  Address-only filtering
+                // then fans the request back to rank 0 and duplicates every
+                // local row.  Distributed ranks are unique within one job, so
+                // exclude our own rank as the stable identity fallback.
+                .filter(|node| local_rank.map_or(true, |rank| node.rank != Some(rank)))
                 .collect()
         }
         FanoutScope::Local => Vec::new(),

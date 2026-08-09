@@ -5,6 +5,8 @@
 
 #[cfg(target_os = "linux")]
 mod forward;
+#[cfg(target_os = "linux")]
+mod hccl_api;
 mod log;
 mod msprof;
 mod names;

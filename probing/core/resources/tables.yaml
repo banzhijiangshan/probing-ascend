@@ -451,7 +451,7 @@ tables:
     key_columns:
       ts: "事件时间"
       thread_id: "上报线程"
-      row_source: "api=耗时行；compact=count/group/alg 参数行"
+      row_source: "api=MSProf 耗时行；api_direct=常驻 API hook；compact=count/group/alg 参数行"
       begin_ns: "开始时间（api 行）"
       end_ns: "结束时间（api 行）"
       duration_ns: "耗时（api 行）"
@@ -464,6 +464,7 @@ tables:
       relay: "HCCL relay 标志"
       retry: "HCCL retry 计数"
       compact_type: "MsprofReportCompactInfo type id"
+      rank: "进程全局 rank（来自启动环境）"
     notes:
       - "api 与 compact 行按 thread_id + 邻近 ts JOIN"
 

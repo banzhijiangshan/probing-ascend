@@ -92,7 +92,7 @@ pub fn collectives_schema() -> Schema {
         .col_doc(
             "row_source",
             DType::Str,
-            "api=耗时行；compact=count/group/alg 参数行",
+            "api=MSProf 耗时行；api_direct=常驻 API hook；compact=count/group/alg 参数行",
         )
         .col_doc("begin_ns", DType::I64, "开始时间（api 行）")
         .col_doc("end_ns", DType::I64, "结束时间（api 行）")
@@ -110,6 +110,7 @@ pub fn collectives_schema() -> Schema {
             DType::I32,
             "MsprofReportCompactInfo type id",
         )
+        .col_doc("rank", DType::I32, "进程全局 rank（来自启动环境）")
 }
 
 pub fn mc2_streams_schema() -> Schema {

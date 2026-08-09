@@ -1,5 +1,6 @@
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::logical_expr::Expr;
+use datafusion_sql::unparser::expr_to_sql;
 
 use crate::core::plugin_advanced::can_push_filter_exact_for_schema;
 
@@ -29,7 +30,12 @@ pub fn build_remote_table_sql(
     let where_parts: Vec<String> = filters
         .iter()
         .filter(|f| can_push_filter_exact_for_schema(table_schema, f))
-        .map(|f| f.to_string())
+        // Expr::Display is a diagnostic representation (for example it emits
+        // Utf8("all_reduce")), not executable SQL.  Round-trip through
+        // DataFusion's SQL unparser so literals retain valid SQL syntax on
+        // remote peers.  If a filter cannot be unparsed, omit the pushdown and
+        // let the coordinator apply it after merging.
+        .filter_map(|f| expr_to_sql(f).ok().map(|sql| sql.to_string()))
         .collect();
     if !where_parts.is_empty() {
         sql.push_str(" WHERE ");
@@ -72,5 +78,15 @@ mod tests {
         assert!(sql.contains("probe.demo.metrics"));
         assert!(!sql.contains("global."));
         assert!(!sql.contains("_probe_node"));
+    }
+
+    #[test]
+    fn string_literal_filter_is_valid_sql() {
+        let schema = Arc::new(Schema::new(vec![Field::new("op", DataType::Utf8, true)]));
+        let filters = vec![col("op").eq(lit("all_reduce"))];
+        let sql =
+            build_remote_table_sql("python", "comm_collective", &schema, None, &filters, None);
+        assert!(sql.contains("'all_reduce'"), "{sql}");
+        assert!(!sql.contains("Utf8("), "{sql}");
     }
 }

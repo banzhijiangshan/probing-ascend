@@ -70,11 +70,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut api_duration_ms = Vec::new();
             let mut api_operations = BTreeMap::<String, usize>::new();
             let mut per_operation_ms = BTreeMap::<String, Vec<f64>>::new();
+            let mut slow_begin_ns = Vec::new();
+            let mut slow_end_ns = Vec::new();
             let mut compact_rows = 0usize;
             for chunk in table.chunks_logical() {
                 for row in table.rows(chunk) {
                     total_rows += 1;
-                    if row.col_str(2) == "api" {
+                    if matches!(row.col_str(2), "api" | "api_direct") {
                         let operation = row.col_str(7).to_owned();
                         let duration_ms = row.col_i64(5).max(0) as f64 / 1e6;
                         api_duration_ms.push(duration_ms);
@@ -83,6 +85,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .entry(operation)
                             .or_default()
                             .push(duration_ms);
+                        if row.col_str(7) == "HcclAllReduce" && duration_ms >= 10.0 {
+                            slow_begin_ns.push(row.col_i64(3));
+                            slow_end_ns.push(row.col_i64(4));
+                        }
                     } else if row.col_str(2) == "compact" {
                         compact_rows += 1;
                     }
@@ -95,6 +101,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for (operation, durations) in &mut per_operation_ms {
                 print_stats(&format!("collective_api operation={operation}"), durations);
             }
+            println!(
+                "allreduce_ge_10ms count={} first_begin_ns={} last_end_ns={}",
+                slow_begin_ns.len(),
+                slow_begin_ns.iter().min().copied().unwrap_or(0),
+                slow_end_ns.iter().max().copied().unwrap_or(0),
+            );
         }
         "hccl.tasks" => {
             let mut estimated_ms = Vec::new();

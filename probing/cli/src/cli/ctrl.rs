@@ -247,6 +247,11 @@ pub async fn request(ctrl: ProbeEndpoint, url: &str, body: Option<String>) -> Re
         Request::builder()
             .method("POST")
             .uri(url)
+            // Axum's `Json` extractor rejects an otherwise valid JSON body
+            // without this header (HTTP 415).  The old CLI then attempted to
+            // parse that plain-text error as JSON and surfaced only
+            // `expected value at line 1 column 1` for `cluster query`.
+            .header("content-type", "application/json")
             .body(Full::<Bytes>::from(body))
             .context("Failed to build POST request")?
     } else {

@@ -264,10 +264,25 @@ fn prefer_node_representative(candidate: &Node, existing: &Node) -> bool {
 /// Alive peers excluding this process's listen addresses.
 pub fn remote_peers_excluding_local() -> Vec<Node> {
     let local_addrs = local_listen_addrs();
+    let self_rank = env_i32("RANK");
+    let distributed = env_i32("WORLD_SIZE").is_some_and(|world| world > 1);
     get_nodes()
         .into_iter()
         .filter(is_node_alive)
+        // Torch elastic may briefly start helper Python processes without a
+        // distributed rank.  They can register an HTTP endpoint but are not
+        // members of the training world and must not count as fan-out peers.
+        .filter(|node| !distributed || node.rank.is_some())
         .filter(|node| !local_addrs.iter().any(|local| local == &node.addr))
+        // The HTTP listener is recorded as 0.0.0.0:<port>, while torchrun
+        // heartbeats advertise POD_IP:<port> (or an explicit address).  The
+        // same process therefore cannot always be identified by address.
+        // Global rank is authoritative and prevents the global-catalog path
+        // from querying the coordinator again and duplicating its rows.
+        .filter(|node| match (node.rank, self_rank) {
+            (Some(rank), Some(local_rank)) => rank != local_rank,
+            _ => true,
+        })
         .collect()
 }
 

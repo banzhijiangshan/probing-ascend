@@ -34,6 +34,7 @@ datafusion = { version = "54.0.0", default-features = false, features = [
     "regex_expressions",
     "string_expressions",
 ] }
+datafusion-sql = "54.0.0"
 chrono = { version = "0.4", features = ["serde"] }
 ctor = { version = "0.4.1", features = [] }
 env_logger = { version = "0.11.6", default-features = false, features = [
